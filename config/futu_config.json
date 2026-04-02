@@ -1,0 +1,14 @@
+{
+    "opend": {
+        "host": "127.0.0.1",
+        "port": 11111
+    },
+    "trade": {
+        "env": "SIMULATE",
+        "market": "HK"
+    },
+    "strategy": {
+        "default_code": "HK.00700",
+        "default_quantity": 100
+    }
+}
