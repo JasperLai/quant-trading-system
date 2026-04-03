@@ -23,6 +23,9 @@ from typing import Dict, Optional, List
 LOG_DIR = os.path.dirname(os.path.abspath(__file__)) + '/logs'
 LOG_FILE = os.path.join(LOG_DIR, 'monitor.log')
 
+# 测试模式：设置为 True 时跳过 openclaw 调用
+TEST_MODE = True
+
 
 class PositionMonitor:
     def __init__(self):
@@ -157,6 +160,9 @@ class PositionMonitor:
     
     def _notify_openclaw(self, message: str):
         """通知 OpenClaw"""
+        if TEST_MODE:
+            print(f"[TEST MODE] 跳过 openclaw 调用，通知内容: {message}")
+            return
         try:
             subprocess.run([
                 'openclaw', 'agent',
@@ -170,12 +176,12 @@ class PositionMonitor:
         """写日志"""
         if not os.path.exists(LOG_DIR):
             os.makedirs(LOG_DIR)
-        
+
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_line = f"[{timestamp}] {message}\n"
-        
-        print(log_line.strip())
-        
+
+        print(log_line.strip(), flush=True)
+
         with open(LOG_FILE, 'a') as f:
             f.write(log_line)
 

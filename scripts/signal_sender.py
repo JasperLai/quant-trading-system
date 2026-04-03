@@ -15,6 +15,9 @@ from datetime import datetime
 LOG_DIR = os.path.dirname(os.path.abspath(__file__)) + '/logs'
 LOG_FILE = os.path.join(LOG_DIR, 'signals.log')
 
+# 测试模式：设置为 True 时跳过 openclaw 调用
+TEST_MODE = True
+
 
 def ensure_log_dir():
     """确保日志目录存在"""
@@ -56,11 +59,14 @@ def send_signal(code, action, price, quantity, note=''):
 
     # 调用 OpenClaw CLI 发送信号
     print(f"发送信号: {action} {code} @ {price}")
-    subprocess.run([
-        'openclaw', 'agent',
-        '--message', message,
-        '--channel', 'feishu'
-    ])
+    if TEST_MODE:
+        print(f"[TEST MODE] 跳过 openclaw 调用，信号内容: {message}")
+    else:
+        subprocess.run([
+            'openclaw', 'agent',
+            '--message', message,
+            '--channel', 'feishu'
+        ])
 
     # 记录日志
     log_signal(code, action, price, quantity, note)

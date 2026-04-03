@@ -107,34 +107,35 @@ class MaCrossStrategy:
 
     def start(self):
         """启动策略"""
-        print(f"=" * 50)
-        print(f"启动均线交叉策略")
-        print(f"代码: {', '.join(self.codes)}")
-        print(f"短期均线周期: {self.short_ma_period}")
-        print(f"长期均线周期: {self.long_ma_period}")
-        print(f"止损比例: {STOP_LOSS_PCT:.1%}")
-        print(f"止盈比例: {TAKE_PROFIT_PCT:.1%}")
-        print("=" * 50)
+        print(f"=" * 50, flush=True)
+        print(f"启动均线交叉策略", flush=True)
+        print(f"代码: {', '.join(self.codes)}", flush=True)
+        print(f"短期均线周期: {self.short_ma_period}", flush=True)
+        print(f"长期均线周期: {self.long_ma_period}", flush=True)
+        print(f"止损比例: {STOP_LOSS_PCT:.1%}", flush=True)
+        print(f"止盈比例: {TAKE_PROFIT_PCT:.1%}", flush=True)
+        print("=" * 50, flush=True)
 
         # 订阅K线
-        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.KLINE])
+        print("正在订阅K线...", flush=True)
+        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.K_DAY])
         if ret != RET_OK:
-            print(f"订阅失败: {data}")
+            print(f"订阅失败: {data}", flush=True)
             return
 
-        print(f"订阅成功: {', '.join(self.codes)}")
+        print(f"订阅成功: {', '.join(self.codes)}", flush=True)
 
         # 设置K线回调
         self.quote_ctx.set_handler(KlineTest(self))
         self.quote_ctx.start()
 
-        print("策略已启动，按 Ctrl+C 停止")
+        print("策略已启动，按 Ctrl+C 停止", flush=True)
 
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("\n停止策略...")
+            print("\n停止策略...", flush=True)
             self.stop()
 
     def stop(self):
