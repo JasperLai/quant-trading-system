@@ -20,7 +20,7 @@ import position_monitor
 # 策略参数
 SHORT_MA = 5    # 短期均线周期
 LONG_MA = 20    # 长期均线周期
-CODES = ['HK.03690', 'HK.09896']  # 美团、MNSO
+CODES = ['HK.03690', 'HK.09896', 'SZ.000001']  # 美团、MNSO、平安银行
 
 # 止损止盈参数
 STOP_LOSS_PCT = -0.03   # 止损 3%
@@ -125,15 +125,33 @@ class MaCrossStrategy:
 
         print(f"订阅成功: {', '.join(self.codes)}", flush=True)
 
-        # 设置K线回调
-        self.quote_ctx.set_handler(KlineTest(self))
-        self.quote_ctx.start()
+        # 初始化：同步获取历史K线
+        print("初始化历史K线数据...", flush=True)
+        for code in self.codes:
+            ret, data = self.quote_ctx.get_cur_kline(code, self.long_ma_period + 5, SubType.K_DAY)
+            if ret == RET_OK:
+                for bar in data.to_dict('records'):
+                    self.on_bar(bar)
+                print(f"  {code}: 获取到 {len(data)} 条K线", flush=True)
+            else:
+                print(f"  {code}: 获取失败 {data}", flush=True)
 
-        print("策略已启动，按 Ctrl+C 停止", flush=True)
+        print("\n=== 策略初始化完成 ===", flush=True)
+        print("按 Ctrl+C 停止", flush=True)
 
         try:
+            last_check = {code: '' for code in self.codes}
             while True:
-                time.sleep(1)
+                time.sleep(5)  # 每5秒检查一次新K线
+                for code in self.codes:
+                    ret, data = self.quote_ctx.get_cur_kline(code, 2, SubType.K_DAY)
+                    if ret == RET_OK and len(data) > 0:
+                        latest_bar = data.iloc[-1]
+                        time_key = latest_bar['time_key']
+                        # 只处理新K线
+                        if time_key != last_check[code]:
+                            last_check[code] = time_key
+                            self.on_bar(latest_bar.to_dict())
         except KeyboardInterrupt:
             print("\n停止策略...", flush=True)
             self.stop()
@@ -149,12 +167,15 @@ class KlineTest(CurKlineHandlerBase):
     def __init__(self, strategy):
         self.strategy = strategy
 
-    def on_recv(self, rsp_pb):
+    def on_recv_rsp(self, rsp_pb):
         """K线数据推送回调"""
-        ret, data = super().on_recv(rsp_pb)
-        if ret == RET_OK:
-            for bar in data:
-                self.strategy.on_bar(bar)
+        ret_code, data = super().on_recv_rsp(rsp_pb)
+        if ret_code != RET_OK:
+            print("KlineTest error: %s" % data)
+            return RET_ERROR, data
+        for bar in data:
+            self.strategy.on_bar(bar)
+        return RET_OK, data
 
 
 def main():
