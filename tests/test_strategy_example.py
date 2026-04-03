@@ -30,7 +30,7 @@ class FakeOpenQuoteContext:
         self.handlers.append(handler)
         return 0
 
-    def subscribe(self, codes, subtypes):
+    def subscribe(self, codes, subtypes, **kwargs):
         self.subscriptions.append((list(codes), list(subtypes)))
         return 0, None
 
@@ -124,7 +124,7 @@ class StrategyExampleTest(unittest.TestCase):
         strategy.last_long_ma[code] = strategy.calculate_ma(strategy.prices[code], strategy.long_ma_period)
         return code
 
-    def test_start_registers_quote_handler_and_quote_subscription(self):
+    def test_start_registers_quote_handler_and_required_subscriptions(self):
         strategy = self.make_strategy()
 
         with mock.patch.object(self.module.time, 'sleep', side_effect=KeyboardInterrupt):
@@ -133,7 +133,7 @@ class StrategyExampleTest(unittest.TestCase):
         self.assertEqual(1, len(strategy.quote_ctx.handlers))
         self.assertIsInstance(strategy.quote_ctx.handlers[0], self.module.QuoteHandler)
         self.assertEqual(
-            [(['HK.00700'], ['QUOTE'])],
+            [(['HK.00700'], ['K_DAY']), (['HK.00700'], ['QUOTE'])],
             strategy.quote_ctx.subscriptions,
         )
 

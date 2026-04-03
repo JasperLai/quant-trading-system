@@ -154,7 +154,15 @@ class MaCrossStrategy:
             print("报价回调处理器设置失败", flush=True)
             return
 
-        # 盘中策略只订阅实时报价，日线仅用于初始化均线
+        # 先订阅日线，确保 get_cur_kline(K_DAY) 可正常返回初始化数据
+        print("正在订阅日K线...", flush=True)
+        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.K_DAY], subscribe_push=False)
+        if ret != RET_OK:
+            print(f"日K订阅失败: {data}", flush=True)
+            return
+        print("日K订阅成功", flush=True)
+
+        # 盘中策略只依赖实时报价推送
         print("正在订阅实时报价...", flush=True)
         ret, data = self.quote_ctx.subscribe(self.codes, [SubType.QUOTE])
         if ret != RET_OK:
@@ -216,6 +224,12 @@ class QuoteHandler(StockQuoteHandlerBase):
             print("QuoteHandler error: %s" % data)
             return RET_ERROR, data
         for quote in data.to_dict('records'):
+            print(
+                f"[QUOTE回调] {quote['code']} "
+                f"{quote.get('data_date', '')} {quote.get('data_time', '')} "
+                f"last={quote['last_price']} volume={quote.get('volume', 'N/A')}",
+                flush=True,
+            )
             self.strategy.on_quote(quote)
         return RET_OK, data
 
@@ -232,7 +246,7 @@ def main():
 
     print(f"OpenD 连接成功!")
     print(f"服务器版本: {state.get('server_ver', 'N/A')}")
-    print(f"行情登录: {'是' if state.get('qot_logined') == '1' else '否'}")
+    print(f"行情登录: {'是' if state.get('qot_logined') in (True, '1', 1) else '否'}")
 
     strategy.start()
 
