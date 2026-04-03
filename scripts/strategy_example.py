@@ -11,6 +11,7 @@
 
 import sys
 import os
+import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from futu import *
@@ -44,38 +45,70 @@ class MaCrossStrategy:
         # 持仓监控器（风控 + 持仓维护）
         self.monitor = position_monitor.PositionMonitor()
 
+        # 盘中只依赖实时报价推送
+        self.quote_handler = QuoteHandler(self)
+
     def calculate_ma(self, prices, period):
         """计算简单移动平均"""
         if len(prices) < period:
             return None
         return sum(prices[-period:]) / period
 
-    def on_bar(self, bar_data):
-        """K线数据回调"""
-        code = bar_data['code']
-        price = bar_data['close']
-        self.prices[code].append(price)
+    def calculate_live_ma(self, code, latest_price):
+        """用最新报价覆盖最后一根价格，计算盘中实时均线。"""
+        history = self.prices[code]
+        if len(history) < self.long_ma_period:
+            return None, None
 
-        # 数据收集阶段
+        live_prices = history[:-1] + [latest_price]
+        short_ma = self.calculate_ma(live_prices, self.short_ma_period)
+        long_ma = self.calculate_ma(live_prices, self.long_ma_period)
+        return short_ma, long_ma
+
+    def on_bar(self, bar_data):
+        """加载历史日线收盘价，用于初始化均线。"""
+        code = bar_data['code']
+        close_price = bar_data['close']
+
+        # 只添加收盘价到价格序列
+        if not self.prices[code] or self.prices[code][-1] != close_price:
+            self.prices[code].append(close_price)
+
+        # 保持足够的历史数据
+        if len(self.prices[code]) > self.long_ma_period + 10:
+            self.prices[code] = self.prices[code][-(self.long_ma_period + 10):]
+
+        print(f"[K线] {code} 收盘价: {close_price:.2f} | 数据量: {len(self.prices[code])}")
+
+    def on_quote(self, quote_data):
+        """实时报价回调 - 基于实时价格判断金叉死叉"""
+        code = quote_data['code']
+        price = quote_data['last_price']
+
+        # 数据不足时不判断
         if len(self.prices[code]) < self.long_ma_period:
             return
 
-        short_ma = self.calculate_ma(self.prices[code], self.short_ma_period)
-        long_ma = self.calculate_ma(self.prices[code], self.long_ma_period)
-
-        print(f"[{code}] {bar_data['time_key']} 价格: {price:.2f} | "
-              f"MA{self.short_ma_period}: {short_ma:.2f} | "
-              f"MA{self.long_ma_period}: {long_ma:.2f}")
+        # 用最新报价替换最后一根K线收盘价，得到盘中实时均线
+        short_ma, long_ma = self.calculate_live_ma(code, price)
+        if short_ma is None or long_ma is None:
+            return
 
         # 避免重复信号
         if abs(short_ma - self.last_short_ma[code]) < 0.01 and abs(long_ma - self.last_long_ma[code]) < 0.01:
             return
 
+        prev_short_ma = self.last_short_ma[code]
+        prev_long_ma = self.last_long_ma[code]
+
         self.last_short_ma[code] = short_ma
         self.last_long_ma[code] = long_ma
 
+        print(f"[报价] {code} 实时价: {price:.2f} | MA5: {short_ma:.2f} | MA20: {long_ma:.2f}")
+
         # ========== 策略核心：只判断金叉买入 ==========
-        if short_ma > long_ma:
+        # 金叉：短期均线从下方穿越长期均线
+        if prev_short_ma <= prev_long_ma and short_ma > long_ma:
             pos_info = self.monitor.get_position_info(code)
             if pos_info is None:
                 # 空仓且金叉 → 买入
@@ -102,7 +135,7 @@ class MaCrossStrategy:
         # SELL 信号由 position_monitor 根据止损/止盈条件触发
         # 策略不介入，避免双重判断
 
-        # ========== 每个tick都检查持仓的风控条件 ==========
+        # ========== 检查持仓的风控条件 ==========
         self.monitor.on_tick(code, price)
 
     def start(self):
@@ -116,42 +149,50 @@ class MaCrossStrategy:
         print(f"止盈比例: {TAKE_PROFIT_PCT:.1%}", flush=True)
         print("=" * 50, flush=True)
 
-        # 订阅K线
-        print("正在订阅K线...", flush=True)
-        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.K_DAY])
+        ret = self.quote_ctx.set_handler(self.quote_handler)
         if ret != RET_OK:
-            print(f"订阅失败: {data}", flush=True)
+            print("报价回调处理器设置失败", flush=True)
             return
 
+        # 盘中策略只订阅实时报价，日线仅用于初始化均线
+        print("正在订阅实时报价...", flush=True)
+        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.QUOTE])
+        if ret != RET_OK:
+            print(f"报价订阅失败: {data}", flush=True)
+            return
         print(f"订阅成功: {', '.join(self.codes)}", flush=True)
 
-        # 初始化：同步获取历史K线
+        # 初始化：用 get_cur_kline 主动获取历史K线数据
         print("初始化历史K线数据...", flush=True)
         for code in self.codes:
-            ret, data = self.quote_ctx.get_cur_kline(code, self.long_ma_period + 5, SubType.K_DAY)
+            ret, data = self.quote_ctx.get_cur_kline(code, self.long_ma_period + 5, KLType.K_DAY)
             if ret == RET_OK:
                 for bar in data.to_dict('records'):
                     self.on_bar(bar)
-                print(f"  {code}: 获取到 {len(data)} 条K线", flush=True)
+                short_ma = self.calculate_ma(self.prices[code], self.short_ma_period)
+                long_ma = self.calculate_ma(self.prices[code], self.long_ma_period)
+                self.last_short_ma[code] = short_ma if short_ma else 0
+                self.last_long_ma[code] = long_ma if long_ma else 0
+                print(f"  {code}: 获取到 {len(data)} 条K线 | MA5: {short_ma:.2f} | MA20: {long_ma:.2f}", flush=True)
             else:
                 print(f"  {code}: 获取失败 {data}", flush=True)
 
-        print("\n=== 策略初始化完成 ===", flush=True)
+        # 初始化均线值
+        for code in self.codes:
+            short_ma = self.calculate_ma(self.prices[code], self.short_ma_period)
+            long_ma = self.calculate_ma(self.prices[code], self.long_ma_period)
+            self.last_short_ma[code] = short_ma if short_ma else 0
+            self.last_long_ma[code] = long_ma if long_ma else 0
+
+        print("\n=== 策略初始化完成，等待实时报价... ===", flush=True)
+        print(f"当前均线状态: MA5 vs MA20", flush=True)
+        for code in self.codes:
+            print(f"  {code}: MA5={self.last_short_ma[code]:.2f}, MA20={self.last_long_ma[code]:.2f}", flush=True)
         print("按 Ctrl+C 停止", flush=True)
 
         try:
-            last_check = {code: '' for code in self.codes}
             while True:
-                time.sleep(5)  # 每5秒检查一次新K线
-                for code in self.codes:
-                    ret, data = self.quote_ctx.get_cur_kline(code, 2, SubType.K_DAY)
-                    if ret == RET_OK and len(data) > 0:
-                        latest_bar = data.iloc[-1]
-                        time_key = latest_bar['time_key']
-                        # 只处理新K线
-                        if time_key != last_check[code]:
-                            last_check[code] = time_key
-                            self.on_bar(latest_bar.to_dict())
+                time.sleep(1)
         except KeyboardInterrupt:
             print("\n停止策略...", flush=True)
             self.stop()
@@ -163,18 +204,19 @@ class MaCrossStrategy:
         print("策略已停止")
 
 
-class KlineTest(CurKlineHandlerBase):
+class QuoteHandler(StockQuoteHandlerBase):
+    """实时报价回调"""
     def __init__(self, strategy):
         self.strategy = strategy
 
     def on_recv_rsp(self, rsp_pb):
-        """K线数据推送回调"""
+        """实时报价推送"""
         ret_code, data = super().on_recv_rsp(rsp_pb)
         if ret_code != RET_OK:
-            print("KlineTest error: %s" % data)
+            print("QuoteHandler error: %s" % data)
             return RET_ERROR, data
-        for bar in data:
-            self.strategy.on_bar(bar)
+        for quote in data.to_dict('records'):
+            self.strategy.on_quote(quote)
         return RET_OK, data
 
 
