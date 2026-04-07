@@ -6,6 +6,10 @@ from pathlib import Path
 from unittest import mock
 
 
+ROOT = Path('/Users/mubinlai/code/quant-trading-system')
+SCRIPTS = ROOT / 'scripts'
+
+
 class FakeFrame:
     def __init__(self, records):
         self._records = list(records)
@@ -78,7 +82,15 @@ class FakeMonitor:
         return None
 
 
-class StrategyExampleTest(unittest.TestCase):
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class StrategyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fake_signal_sender = types.ModuleType('signal_sender')
@@ -104,61 +116,128 @@ class StrategyExampleTest(unittest.TestCase):
         sys.modules['signal_sender'] = cls.fake_signal_sender
         sys.modules['position_monitor'] = cls.fake_position_monitor
 
-        path = Path('/Users/mubinlai/code/quant-trading-system/scripts/strategy_example.py')
-        spec = importlib.util.spec_from_file_location('strategy_example_under_test', path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        cls.module = module
+        cls.base_module = load_module('ma_strategy_base', SCRIPTS / 'ma_strategy_base.py')
+        cls.single_module = load_module('strategy_example', SCRIPTS / 'strategy_example.py')
+        cls.pyramiding_module = load_module('pyramiding_strategy', SCRIPTS / 'pyramiding_strategy.py')
+        cls.manager_module = load_module('strategy_manager', SCRIPTS / 'strategy_manager.py')
 
     def setUp(self):
         self.fake_signal_sender.calls.clear()
 
-    def make_strategy(self):
-        strategy = self.module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
-        return strategy
-
-    def seed_history(self, strategy):
-        code = 'HK.00700'
+    def seed_history(self, strategy, code='HK.00700'):
         strategy.prices[code] = [10.0] * 19 + [9.0]
+        strategy.bar_time_keys[code] = [f'2026-01-{idx + 1:02d} 00:00:00' for idx in range(20)]
         strategy.last_short_ma[code] = strategy.calculate_ma(strategy.prices[code], strategy.short_ma_period)
         strategy.last_long_ma[code] = strategy.calculate_ma(strategy.prices[code], strategy.long_ma_period)
         return code
 
-    def test_start_registers_quote_handler_and_required_subscriptions(self):
-        strategy = self.make_strategy()
+    def test_on_bar_appends_same_price_when_time_key_changes(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['SZ.000001'], short_ma=5, long_ma=10)
+        strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-01 00:00:00', 'close': 10.94})
+        strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-02 00:00:00', 'close': 10.94})
 
-        with mock.patch.object(self.module.time, 'sleep', side_effect=KeyboardInterrupt):
+        self.assertEqual([10.94, 10.94], strategy.prices['SZ.000001'])
+        self.assertEqual(
+            ['2026-04-01 00:00:00', '2026-04-02 00:00:00'],
+            strategy.bar_time_keys['SZ.000001'],
+        )
+
+    def test_on_bar_updates_last_value_when_time_key_repeats(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['SZ.000001'], short_ma=5, long_ma=10)
+        strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-01 00:00:00', 'close': 10.94})
+        strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-01 00:00:00', 'close': 10.99})
+
+        self.assertEqual([10.99], strategy.prices['SZ.000001'])
+        self.assertEqual(['2026-04-01 00:00:00'], strategy.bar_time_keys['SZ.000001'])
+
+    def test_single_strategy_start_registers_quote_handler_and_subscriptions(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+
+        with mock.patch.object(self.base_module.time, 'sleep', side_effect=KeyboardInterrupt):
             strategy.start()
 
         self.assertEqual(1, len(strategy.quote_ctx.handlers))
-        self.assertIsInstance(strategy.quote_ctx.handlers[0], self.module.QuoteHandler)
+        self.assertIsInstance(strategy.quote_ctx.handlers[0], self.base_module.QuoteHandler)
         self.assertEqual(
             [(['HK.00700'], ['K_DAY']), (['HK.00700'], ['QUOTE'])],
             strategy.quote_ctx.subscriptions,
         )
 
-    def test_on_quote_uses_live_price_to_trigger_buy(self):
-        strategy = self.make_strategy()
+    def test_single_strategy_buy_creates_pending_only(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
         code = self.seed_history(strategy)
 
         strategy.on_quote({'code': code, 'last_price': 20.0})
 
         self.assertEqual(1, len(self.fake_signal_sender.calls))
-        self.assertEqual((code, 'BUY', 20.0, 100, '均线金叉买入'), self.fake_signal_sender.calls[0])
-        self.assertEqual(1, len(strategy.monitor.add_calls))
-        self.assertEqual((code, 20.0), strategy.monitor.tick_calls[-1])
-        self.assertGreater(strategy.last_short_ma[code], strategy.last_long_ma[code])
+        self.assertEqual([], strategy.monitor.add_calls)
+        self.assertIn(code, strategy.pending_buys)
 
-    def test_on_quote_does_not_rebuy_when_position_exists(self):
-        strategy = self.make_strategy()
+    def test_single_strategy_confirm_position_registers_monitor(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        code = self.seed_history(strategy)
+        strategy.pending_buys.add(code)
+
+        strategy.confirm_position(code=code, qty=100, entry_price=20.0)
+
+        self.assertNotIn(code, strategy.pending_buys)
+        self.assertEqual(1, len(strategy.monitor.add_calls))
+
+    def test_pyramiding_strategy_respects_max_position(self):
+        strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
+            codes=['HK.00700'],
+            short_ma=5,
+            long_ma=20,
+            order_qty=100,
+            max_position_per_stock=300,
+        )
+        code = self.seed_history(strategy)
+        strategy.monitor.positions[code] = {'qty': 200}
+        strategy.pending_buys[code] = 100
+
+        strategy.on_quote({'code': code, 'last_price': 20.0})
+
+        self.assertEqual([], self.fake_signal_sender.calls)
+
+    def test_pyramiding_strategy_allows_incremental_buy_under_cap(self):
+        strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
+            codes=['HK.00700'],
+            short_ma=5,
+            long_ma=20,
+            order_qty=100,
+            max_position_per_stock=300,
+        )
         code = self.seed_history(strategy)
         strategy.monitor.positions[code] = {'qty': 100}
 
         strategy.on_quote({'code': code, 'last_price': 20.0})
 
-        self.assertEqual([], self.fake_signal_sender.calls)
-        self.assertEqual([], strategy.monitor.add_calls)
-        self.assertEqual([(code, 20.0)], strategy.monitor.tick_calls)
+        self.assertEqual(1, len(self.fake_signal_sender.calls))
+        self.assertEqual(100, strategy.pending_buys[code])
+
+    def test_pyramiding_confirm_position_reduces_pending_qty(self):
+        strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
+            codes=['HK.00700'],
+            short_ma=5,
+            long_ma=20,
+            order_qty=100,
+            max_position_per_stock=300,
+        )
+        code = self.seed_history(strategy)
+        strategy.pending_buys[code] = 200
+
+        strategy.confirm_position(code=code, qty=100, entry_price=20.0)
+
+        self.assertEqual(100, strategy.pending_buys[code])
+        self.assertEqual(1, len(strategy.monitor.add_calls))
+
+    def test_strategy_manager_loads_registered_strategy(self):
+        manager = self.manager_module.StrategyManager()
+        strategy = manager.load_strategy('pyramiding_ma', codes=['HK.00700'], max_position_per_stock=400)
+
+        self.assertIsInstance(strategy, self.pyramiding_module.PyramidingMaCrossStrategy)
+        self.assertEqual(400, strategy.max_position_per_stock)
+        self.assertIn('pyramiding_ma', manager.instances)
 
 
 if __name__ == '__main__':

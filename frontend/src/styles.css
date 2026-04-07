@@ -1,0 +1,44 @@
+:root {
+  font-family: "PingFang SC", "Helvetica Neue", sans-serif;
+  color: #102a43;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4ecf7 100%);
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: linear-gradient(180deg, #102a43 0%, #243b53 100%) !important;
+}
+
+.brand {
+  padding: 24px 20px;
+}
+
+.header {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(16, 42, 67, 0.08);
+}
+
+.content {
+  padding: 24px;
+}
+
+.log-panel {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 16px;
+  background: #0b1f33;
+  color: #d9e2ec;
+  border-radius: 12px;
+}

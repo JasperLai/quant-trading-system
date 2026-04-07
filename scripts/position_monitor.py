@@ -50,26 +50,46 @@ class PositionMonitor:
             take_profit_pct: 止盈比例（用于显示）
             reason: 买入原因（记录用）
         """
+        existing = self.positions.get(code)
+        if existing is None:
+            total_qty = qty
+            avg_entry = entry_price
+            entry_time = datetime.now().isoformat()
+        else:
+            total_qty = existing['qty'] + qty
+            avg_entry = round(
+                (existing['entry'] * existing['qty'] + entry_price * qty) / total_qty,
+                4,
+            )
+            stop_loss = round(avg_entry * (1 + stop_loss_pct), 2)
+            take_profit = round(avg_entry * (1 + take_profit_pct), 2)
+            entry_time = existing.get('entry_time', datetime.now().isoformat())
+
         self.positions[code] = {
-            'qty': qty,
-            'entry': entry_price,
+            'qty': total_qty,
+            'entry': avg_entry,
             'stop': stop_loss,
             'profit': take_profit,
             'stop_pct': stop_loss_pct,
             'profit_pct': take_profit_pct,
             'reason': reason,
-            'entry_time': datetime.now().isoformat()
+            'entry_time': entry_time
         }
         
         # 记录日志
-        self._log(f"➕ 添加持仓监控: {code} 数量:{qty} 买入价:{entry_price} 止损:{stop_loss}({stop_loss_pct:.1%}) 止盈:{take_profit}({take_profit_pct:.1%})")
+        self._log(
+            f"➕ 添加持仓监控: {code} 新增数量:{qty} "
+            f"持仓总数:{total_qty} 均价:{avg_entry} "
+            f"止损:{stop_loss}({stop_loss_pct:.1%}) 止盈:{take_profit}({take_profit_pct:.1%})"
+        )
         
         # 通知 OpenClaw
         self._notify_openclaw(
             f"📋 【持仓记录】\n"
             f"股票: {code}\n"
-            f"数量: {qty}股\n"
-            f"买入价: {entry_price}\n"
+            f"新增数量: {qty}股\n"
+            f"持仓总数: {total_qty}股\n"
+            f"持仓均价: {avg_entry}\n"
             f"止损: {stop_loss} ({stop_loss_pct:.1%})\n"
             f"止盈: {take_profit} ({take_profit_pct:.1%})\n"
             f"原因: {reason}"

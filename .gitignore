@@ -30,6 +30,8 @@ env/
 .vscode/
 *.swp
 *.swo
+node_modules/
+frontend/dist/
 
 # Logs
 logs/*.log
