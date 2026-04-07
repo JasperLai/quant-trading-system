@@ -1,7 +1,10 @@
 :root {
   font-family: "PingFang SC", "Helvetica Neue", sans-serif;
-  color: #102a43;
-  background: linear-gradient(135deg, #f5f7fa 0%, #e4ecf7 100%);
+  color: #2c2340;
+  background:
+    radial-gradient(circle at top left, rgba(255, 214, 102, 0.45), transparent 28%),
+    radial-gradient(circle at top right, rgba(145, 213, 255, 0.45), transparent 24%),
+    linear-gradient(180deg, #fff9ef 0%, #f6f1ff 52%, #eef6ff 100%);
 }
 
 body {
@@ -17,28 +20,182 @@ body {
 }
 
 .sidebar {
-  background: linear-gradient(180deg, #102a43 0%, #243b53 100%) !important;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.16), transparent 34%),
+    linear-gradient(180deg, #7158e2 0%, #4d7cfe 55%, #44c8f5 100%) !important;
+  padding: 16px 12px;
 }
 
 .brand {
-  padding: 24px 20px;
+  margin: 8px 8px 18px;
+  padding: 22px 18px;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.brand-badge {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  margin-bottom: 12px;
+}
+
+.brand-title {
+  color: #fff !important;
+  margin: 0 0 8px !important;
+}
+
+.brand-subtitle {
+  color: rgba(255, 255, 255, 0.88) !important;
+  margin-bottom: 0 !important;
+  line-height: 1.7;
+}
+
+.nav-menu {
+  background: transparent !important;
+  border-inline-end: 0 !important;
+}
+
+.nav-menu .ant-menu-item {
+  border-radius: 18px !important;
+  margin: 8px 6px !important;
+  color: #f8fbff !important;
+  font-weight: 600;
+}
+
+.nav-menu .ant-menu-item-selected {
+  background: rgba(255, 255, 255, 0.2) !important;
+  box-shadow: 0 10px 24px rgba(18, 43, 120, 0.18);
 }
 
 .header {
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid rgba(16, 42, 67, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: auto !important;
+  margin: 18px 18px 0;
+  padding: 22px 28px !important;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(129, 140, 248, 0.16);
+  box-shadow: 0 22px 50px rgba(112, 92, 235, 0.12);
+}
+
+.header-kicker {
+  display: block;
+  margin-bottom: 8px;
+  color: #8c6dfd;
+  letter-spacing: 0.1em;
+  font-size: 12px;
+}
+
+.header-tag {
+  border-radius: 999px;
+  font-weight: 700;
+  padding-inline: 14px;
+  padding-block: 6px;
 }
 
 .content {
-  padding: 24px;
+  padding: 18px;
+}
+
+.page-shell {
+  display: grid;
+  gap: 16px;
+}
+
+.hero-card {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+}
+
+.hero-card::before {
+  content: "";
+  position: absolute;
+  inset: auto -30px -40px auto;
+  width: 180px;
+  height: 180px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.hero-card-purple {
+  background: linear-gradient(135deg, #f5e8ff 0%, #eef4ff 55%, #fff7d6 100%) !important;
+}
+
+.hero-card-yellow {
+  background: linear-gradient(135deg, #fff4db 0%, #fff0f6 55%, #eef9ff 100%) !important;
+}
+
+.hero-kicker {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: #7c5cff;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+
+.hero-text {
+  max-width: 760px;
+  color: #5a5671;
+  line-height: 1.8;
+}
+
+.strategy-card,
+.control-card {
+  border: 1px solid rgba(124, 92, 255, 0.12) !important;
+}
+
+.strategy-card-sky {
+  background: linear-gradient(180deg, #ffffff 0%, #f5fbff 100%);
+}
+
+.strategy-card-sun {
+  background: linear-gradient(180deg, #fffdf7 0%, #fff5e8 100%);
+}
+
+.ant-card .ant-card-head {
+  border-bottom: 0;
+}
+
+.ant-statistic {
+  padding: 14px 16px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+}
+
+.ant-table-wrapper .ant-table {
+  border-radius: 20px;
+  overflow: hidden;
 }
 
 .log-panel {
   max-height: 60vh;
   overflow: auto;
   padding: 16px;
-  background: #0b1f33;
-  color: #d9e2ec;
-  border-radius: 12px;
+  background: linear-gradient(180deg, #1f1f3d 0%, #182848 100%);
+  color: #eef4ff;
+  border-radius: 18px;
+}
+
+@media (max-width: 960px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .content .ant-col {
+    max-width: 100%;
+    flex: 0 0 100%;
+  }
 }

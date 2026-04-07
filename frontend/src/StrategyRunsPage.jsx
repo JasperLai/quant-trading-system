@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  Divider,
   Form,
   Input,
   InputNumber,
@@ -10,6 +11,7 @@ import {
   Row,
   Select,
   Space,
+  Statistic,
   Table,
   Tag,
   Typography,
@@ -35,6 +37,7 @@ export default function StrategyRunsPage() {
     () => strategies.find((item) => item.name === selectedStrategyName),
     [strategies, selectedStrategyName],
   );
+  const runningCount = runs.filter((item) => item.status === 'running').length;
 
   async function loadStrategies() {
     const data = await api.listStrategies();
@@ -139,11 +142,28 @@ export default function StrategyRunsPage() {
   ];
 
   return (
-    <div>
-      <Typography.Title level={4}>启动停止页</Typography.Title>
+    <div className="page-shell">
+      <Card className="hero-card hero-card-yellow" bordered={false}>
+        <Typography.Text className="hero-kicker">RUN CONTROL</Typography.Text>
+        <Typography.Title level={2}>启动停止页</Typography.Title>
+        <Typography.Paragraph className="hero-text">
+          选择策略、调整参数、启动实例，并随时查看运行日志。右侧表格会自动轮询，方便你观察每个实例的状态变化。
+        </Typography.Paragraph>
+        <Row gutter={16}>
+          <Col span={8}>
+            <Statistic title="已注册策略" value={strategies.length} />
+          </Col>
+          <Col span={8}>
+            <Statistic title="运行中实例" value={runningCount} />
+          </Col>
+          <Col span={8}>
+            <Statistic title="总实例数" value={runs.length} />
+          </Col>
+        </Row>
+      </Card>
       <Row gutter={[16, 16]}>
         <Col span={10}>
-          <Card title="启动策略">
+          <Card className="control-card" title="启动策略">
             <Form layout="vertical" form={form} onFinish={handleStart}>
               <Form.Item name="strategyName" label="策略" rules={[{ required: true }]}>
                 <Select
@@ -170,6 +190,7 @@ export default function StrategyRunsPage() {
                   <InputNumber min={1} style={{ width: '100%' }} />
                 </Form.Item>
               ) : null}
+              <Divider />
               <Button type="primary" htmlType="submit" loading={loading}>
                 启动策略
               </Button>
@@ -177,7 +198,7 @@ export default function StrategyRunsPage() {
           </Card>
         </Col>
         <Col span={14}>
-          <Card title="运行中的策略">
+          <Card className="control-card" title="运行中的策略">
             <Table rowKey="id" dataSource={runs} columns={columns} pagination={false} />
           </Card>
         </Col>

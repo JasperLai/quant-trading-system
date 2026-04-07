@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Card, Col, Descriptions, Empty, Row, Spin, Typography } from 'antd';
+import { Card, Col, Descriptions, Empty, Row, Space, Spin, Tag, Typography } from 'antd';
 import { api } from './api';
 
 export default function StrategyCatalogPage() {
@@ -22,12 +22,29 @@ export default function StrategyCatalogPage() {
   }
 
   return (
-    <div>
-      <Typography.Title level={4}>策略管理页</Typography.Title>
+    <div className="page-shell">
+      <Card className="hero-card hero-card-purple" bordered={false}>
+        <Typography.Text className="hero-kicker">STRATEGY CATALOG</Typography.Text>
+        <Typography.Title level={2}>策略管理页</Typography.Title>
+        <Typography.Paragraph className="hero-text">
+          这里展示当前可加载的策略模型。界面保留了管理后台的密度，但用更圆润、轻松的视觉语言来承载参数信息。
+        </Typography.Paragraph>
+      </Card>
       <Row gutter={[16, 16]}>
         {strategies.map((strategy) => (
           <Col span={12} key={strategy.name}>
-            <Card title={strategy.title} bordered={false}>
+            <Card
+              className={`strategy-card ${strategy.name === 'pyramiding_ma' ? 'strategy-card-sun' : 'strategy-card-sky'}`}
+              bordered={false}
+              title={
+                <Space>
+                  <span>{strategy.title}</span>
+                  <Tag color={strategy.name === 'pyramiding_ma' ? 'orange' : 'blue'}>
+                    {strategy.name === 'pyramiding_ma' ? '加仓版' : '单仓版'}
+                  </Tag>
+                </Space>
+              }
+            >
               <Typography.Paragraph>{strategy.description}</Typography.Paragraph>
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="策略编码">{strategy.name}</Descriptions.Item>
