@@ -36,6 +36,7 @@ frontend/dist/
 # Logs
 logs/*.log
 *.log
+backtest/cache/
 
 # Local config
 config/local_*.json

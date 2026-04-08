@@ -6,45 +6,18 @@
 并把待确认买单数量计入可用仓位判断。
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from futu import RET_OK
 
-from ma_strategy_base import BaseMaCrossStrategy
+from ma_signal import PyramidingMaSignal
+from realtime_strategy_runner import RealtimeMaStrategyRunner
 
 
-class PyramidingMaCrossStrategy(BaseMaCrossStrategy):
+class PyramidingMaCrossStrategy(RealtimeMaStrategyRunner):
     strategy_name = 'pyramiding_ma_cross'
-
-    def __init__(self, *args, max_position_per_stock=300, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.max_position_per_stock = max_position_per_stock
-        self.pending_buys = {}
-
-    def get_pending_qty(self, code):
-        return self.pending_buys.get(code, 0)
-
-    def add_pending_buy(self, code, qty):
-        self.pending_buys[code] = self.pending_buys.get(code, 0) + qty
-
-    def clear_pending_buy(self, code, qty=None):
-        if code not in self.pending_buys:
-            return
-        if qty is None or qty >= self.pending_buys[code]:
-            self.pending_buys.pop(code, None)
-            return
-        self.pending_buys[code] -= qty
-
-    def can_send_buy(self, code, pos_info, qty):
-        current_qty = pos_info['qty'] if pos_info else 0
-        pending_qty = self.get_pending_qty(code)
-        return current_qty + pending_qty + qty <= self.max_position_per_stock
+    signal_class = PyramidingMaSignal
 
     def start(self):
-        print(f"单标的最大仓位: {self.max_position_per_stock}", flush=True)
+        print(f"单标的最大仓位: {self.signal.max_position_per_stock}", flush=True)
         super().start()
 
 

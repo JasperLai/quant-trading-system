@@ -72,15 +72,20 @@ numpy==2.0.2
 ```
 quant-trading-system/
 ├── README.md
-├── docs/
-│   └── ARCHITECTURE.md          # 本文档
+├── backend/                     # FastAPI 后台服务
+├── backtest/                    # 历史 K 线回测
 ├── scripts/
-│   ├── signal_sender.py          # 信号发送脚本示例
-│   └── strategy_example.py       # 策略示例（均线交叉）
+│   ├── ma_signal.py             # 纯策略信号层
+│   ├── realtime_strategy_runner.py  # OpenD 实时运行适配层
+│   ├── strategy_manager.py      # 策略注册与加载
+│   ├── strategy_example.py      # 单仓均线策略
+│   ├── pyramiding_strategy.py   # 有上限加仓策略
+│   └── signal_sender.py         # 信号发送
 ├── config/
 │   └── futu_config.json          # 富途配置
-└── logs/
-    └── signals.log               # 信号日志
+├── frontend/                    # Ant Design 管理页面
+└── tests/
+    └── test_strategy_example.py # 核心策略与回测测试
 ```
 
 ---
@@ -141,6 +146,38 @@ OpenClaw 收到信号后，会：
 2. 确认交易要素（代码、价格、数量）
 3. 执行下单（模拟盘无需确认）
 4. 返回执行结果
+
+### 4. 启动实时策略
+
+```bash
+python3 scripts/strategy_manager.py --strategy single_position_ma --codes SZ.000001
+python3 scripts/strategy_manager.py --strategy pyramiding_ma --codes SZ.000001 --max-position-per-stock 300
+```
+
+### 5. 运行历史回测
+
+回测使用 OpenD 的历史 K 线接口 `request_history_kline(...)` 拉取日线数据，并复用同一套均线策略信号层。
+
+```bash
+python3 backtest/run_backtest.py \
+  --strategy single_position_ma \
+  --codes SZ.000001 \
+  --start 2026-03-01 \
+  --end 2026-04-07 \
+  --short-ma 5 \
+  --long-ma 10
+```
+
+如需输出详细结果：
+
+```bash
+python3 backtest/run_backtest.py \
+  --strategy pyramiding_ma \
+  --codes SZ.000001 \
+  --start 2026-01-01 \
+  --end 2026-04-07 \
+  --report-file backtest/report.json
+```
 
 ---
 

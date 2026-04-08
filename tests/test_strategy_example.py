@@ -49,6 +49,9 @@ class FakeOpenQuoteContext:
             })
         return 0, FakeFrame(records)
 
+    def request_history_kline(self, **kwargs):
+        return 0, FakeFrame([]), None
+
     def get_global_state(self):
         return 0, {'server_ver': 'test', 'qot_logined': '1'}
 
@@ -111,15 +114,20 @@ class StrategyTest(unittest.TestCase):
         futu.StockQuoteHandlerBase = FakeStockQuoteHandlerBase
         futu.SubType = types.SimpleNamespace(K_DAY='K_DAY', QUOTE='QUOTE')
         futu.KLType = types.SimpleNamespace(K_DAY='K_DAY')
+        futu.AuType = types.SimpleNamespace(QFQ='QFQ')
 
         sys.modules['futu'] = futu
         sys.modules['signal_sender'] = cls.fake_signal_sender
         sys.modules['position_monitor'] = cls.fake_position_monitor
 
+        sys.path.insert(0, str(ROOT))
+        cls.signal_module = load_module('ma_signal', SCRIPTS / 'ma_signal.py')
+        cls.runner_module = load_module('realtime_strategy_runner', SCRIPTS / 'realtime_strategy_runner.py')
         cls.base_module = load_module('ma_strategy_base', SCRIPTS / 'ma_strategy_base.py')
         cls.single_module = load_module('strategy_example', SCRIPTS / 'strategy_example.py')
         cls.pyramiding_module = load_module('pyramiding_strategy', SCRIPTS / 'pyramiding_strategy.py')
         cls.manager_module = load_module('strategy_manager', SCRIPTS / 'strategy_manager.py')
+        cls.backtest_engine_module = load_module('backtest.engine', ROOT / 'backtest' / 'engine.py')
 
     def setUp(self):
         self.fake_signal_sender.calls.clear()
@@ -153,7 +161,7 @@ class StrategyTest(unittest.TestCase):
     def test_single_strategy_start_registers_quote_handler_and_subscriptions(self):
         strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
 
-        with mock.patch.object(self.base_module.time, 'sleep', side_effect=KeyboardInterrupt):
+        with mock.patch.object(self.runner_module.time, 'sleep', side_effect=KeyboardInterrupt):
             strategy.start()
 
         self.assertEqual(1, len(strategy.quote_ctx.handlers))
@@ -238,6 +246,42 @@ class StrategyTest(unittest.TestCase):
         self.assertIsInstance(strategy, self.pyramiding_module.PyramidingMaCrossStrategy)
         self.assertEqual(400, strategy.max_position_per_stock)
         self.assertIn('pyramiding_ma', manager.instances)
+
+    def test_strategy_manager_loads_signal_for_backtest(self):
+        manager = self.manager_module.StrategyManager()
+        signal = manager.load_signal('single_position_ma', codes=['SZ.000001'], short_ma=3, long_ma=6)
+
+        self.assertIsInstance(signal, self.signal_module.SinglePositionMaSignal)
+        self.assertEqual(3, signal.short_ma_period)
+        self.assertEqual(6, signal.long_ma_period)
+
+    def test_backtest_engine_can_open_and_close_position(self):
+        signal = self.signal_module.SinglePositionMaSignal(codes=['SZ.000001'], short_ma=2, long_ma=3, order_qty=100)
+        engine = self.backtest_engine_module.BacktestEngine(
+            signal=signal,
+            initial_cash=100000.0,
+            commission_rate=0.0,
+            slippage=0.0,
+            take_profit_pct=0.05,
+        )
+        bars_by_code = {
+            'SZ.000001': [
+                {'code': 'SZ.000001', 'time_key': '2026-01-01 00:00:00', 'close': 10.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-02 00:00:00', 'close': 10.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-03 00:00:00', 'close': 9.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-04 00:00:00', 'close': 12.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-05 00:00:00', 'close': 13.0},
+            ]
+        }
+
+        result = engine.run(bars_by_code)
+
+        self.assertEqual(2, len(result['trades']))
+        self.assertEqual('BUY', result['trades'][0]['side'])
+        self.assertEqual('SELL', result['trades'][1]['side'])
+        self.assertEqual('TAKE_PROFIT', result['trades'][1]['reason'])
+        self.assertEqual({}, result['open_positions'])
+        self.assertGreater(result['summary']['final_equity'], result['summary']['initial_cash'])
 
 
 if __name__ == '__main__':

@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""
+均线策略实时运行适配层。
+
+负责：
+1. OpenD 连接、订阅与回调
+2. 纯信号层与 signal_sender / position_monitor 的桥接
+3. 成交确认后持仓登记
+"""
+
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from futu import *  # noqa: F403
+
+import position_monitor
+import signal_sender
+
+STOP_LOSS_PCT = -0.03
+TAKE_PROFIT_PCT = 0.05
+
+
+class QuoteHandler(StockQuoteHandlerBase):
+    """实时报价回调"""
+
+    def __init__(self, strategy):
+        self.strategy = strategy
+
+    def on_recv_rsp(self, rsp_pb):
+        ret_code, data = super().on_recv_rsp(rsp_pb)
+        if ret_code != RET_OK:
+            print("QuoteHandler error: %s" % data)
+            return RET_ERROR, data
+        for quote in data.to_dict('records'):
+            print(
+                f"[QUOTE回调] {quote['code']} "
+                f"{quote.get('data_date', '')} {quote.get('data_time', '')} "
+                f"last={quote['last_price']} volume={quote.get('volume', 'N/A')}",
+                flush=True,
+            )
+            self.strategy.on_quote(quote)
+        return RET_OK, data
+
+
+class RealtimeMaStrategyRunner:
+    strategy_name = 'realtime_ma_cross'
+    signal_class = None
+
+    def __init__(self, host='127.0.0.1', port=11111, **signal_kwargs):
+        if self.signal_class is None:
+            raise ValueError('signal_class 未定义')
+
+        self.signal = self.signal_class(**signal_kwargs)
+        self.codes = self.signal.codes
+        self.short_ma_period = self.signal.short_ma_period
+        self.long_ma_period = self.signal.long_ma_period
+        self.order_qty = self.signal.order_qty
+        self.host = host
+        self.port = port
+
+        self.quote_ctx = OpenQuoteContext(host=host, port=port)
+        self.monitor = position_monitor.PositionMonitor()
+        self.quote_handler = QuoteHandler(self)
+
+    @property
+    def prices(self):
+        return self.signal.prices
+
+    @property
+    def bar_time_keys(self):
+        return self.signal.bar_time_keys
+
+    @property
+    def last_short_ma(self):
+        return self.signal.last_short_ma
+
+    @property
+    def last_long_ma(self):
+        return self.signal.last_long_ma
+
+    @property
+    def pending_buys(self):
+        return self.signal.pending_buys
+
+    @property
+    def max_position_per_stock(self):
+        return getattr(self.signal, 'max_position_per_stock', None)
+
+    def calculate_ma(self, prices, period):
+        return self.signal.calculate_ma(prices, period)
+
+    def calculate_live_ma(self, code, latest_price):
+        return self.signal.calculate_live_ma(code, latest_price)
+
+    def get_pending_qty(self, code):
+        return self.signal.get_pending_qty(code)
+
+    def clear_pending_buy(self, code, qty=None):
+        self.signal.clear_pending_buy(code, qty)
+
+    def on_bar(self, bar_data):
+        result = self.signal.update_bar(bar_data)
+        print(
+            f"[K线] {result['code']} 时间: {result['time_key']} "
+            f"收盘价: {result['close']:.2f} | 数据量: {result['count']}"
+        )
+
+    def on_buy_signal(self, code, price, qty):
+        print(f"🟢 金叉信号！买入 {code} @ {price}")
+        signal_sender.send_signal(code, 'BUY', price, qty, '均线金叉买入')
+        print(f"🟡 买入待确认: {code}，等待 agent 成交后登记持仓", flush=True)
+
+    def on_quote(self, quote_data):
+        code = quote_data['code']
+        price = quote_data['last_price']
+        pos_info = self.monitor.get_position_info(code)
+        position_qty = pos_info['qty'] if pos_info else 0
+
+        result = self.signal.evaluate_quote(quote_data, position_qty=position_qty)
+        if result is not None:
+            print(
+                f"[报价] {code} 实时价: {price:.2f} | "
+                f"短期MA({self.short_ma_period}): {result['short_ma']:.2f} | "
+                f"长期MA({self.long_ma_period}): {result['long_ma']:.2f}"
+            )
+            if result['buy_signal']:
+                self.on_buy_signal(code, price, result['qty'])
+
+        self.monitor.on_tick(code, price)
+
+    def confirm_position(
+        self,
+        code,
+        qty,
+        entry_price,
+        stop_loss=None,
+        take_profit=None,
+        reason='均线金叉买入',
+    ):
+        stop_loss = stop_loss if stop_loss is not None else round(entry_price * (1 + STOP_LOSS_PCT), 2)
+        take_profit = take_profit if take_profit is not None else round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
+        self.clear_pending_buy(code, qty)
+        self.monitor.add_position(
+            code=code,
+            qty=qty,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            stop_loss_pct=STOP_LOSS_PCT,
+            take_profit_pct=TAKE_PROFIT_PCT,
+            reason=reason,
+        )
+
+    def start(self):
+        print("=" * 50, flush=True)
+        print(f"启动策略: {self.strategy_name}", flush=True)
+        print(f"代码: {', '.join(self.codes)}", flush=True)
+        print(f"短期均线周期: {self.short_ma_period}", flush=True)
+        print(f"长期均线周期: {self.long_ma_period}", flush=True)
+        print(f"单次下单数量: {self.order_qty}", flush=True)
+        print(f"止损比例: {STOP_LOSS_PCT:.1%}", flush=True)
+        print(f"止盈比例: {TAKE_PROFIT_PCT:.1%}", flush=True)
+        print("=" * 50, flush=True)
+
+        ret = self.quote_ctx.set_handler(self.quote_handler)
+        if ret != RET_OK:
+            print("报价回调处理器设置失败", flush=True)
+            return
+
+        print("正在订阅日K线...", flush=True)
+        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.K_DAY], subscribe_push=False)
+        if ret != RET_OK:
+            print(f"日K订阅失败: {data}", flush=True)
+            return
+        print("日K订阅成功", flush=True)
+
+        print("正在订阅实时报价...", flush=True)
+        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.QUOTE])
+        if ret != RET_OK:
+            print(f"报价订阅失败: {data}", flush=True)
+            return
+        print(f"订阅成功: {', '.join(self.codes)}", flush=True)
+
+        print("初始化历史K线数据...", flush=True)
+        for code in self.codes:
+            ret, data = self.quote_ctx.get_cur_kline(code, self.long_ma_period + 5, KLType.K_DAY)
+            if ret == RET_OK:
+                for bar in data.to_dict('records'):
+                    self.on_bar(bar)
+                short_ma, long_ma = self.signal.refresh_reference_ma(code)
+                print(
+                    f"  {code}: 获取到 {len(data)} 条K线 | "
+                    f"短期MA({self.short_ma_period}): {short_ma:.2f} | "
+                    f"长期MA({self.long_ma_period}): {long_ma:.2f}",
+                    flush=True,
+                )
+            else:
+                print(f"  {code}: 获取失败 {data}", flush=True)
+
+        print("\n=== 策略初始化完成，等待实时报价... ===", flush=True)
+        print(
+            f"当前均线状态: 短期MA({self.short_ma_period}) vs 长期MA({self.long_ma_period})",
+            flush=True,
+        )
+        for code in self.codes:
+            print(
+                f"  {code}: "
+                f"短期MA({self.short_ma_period})={self.last_short_ma[code]:.2f}, "
+                f"长期MA({self.long_ma_period})={self.last_long_ma[code]:.2f}",
+                flush=True,
+            )
+        print("按 Ctrl+C 停止", flush=True)
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n停止策略...", flush=True)
+            self.stop()
+
+    def stop(self):
+        self.quote_ctx.stop()
+        self.quote_ctx.close()
+        print("策略已停止")

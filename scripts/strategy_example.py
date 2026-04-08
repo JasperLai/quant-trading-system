@@ -6,34 +6,15 @@
 买入成交前只保留一个 pending BUY。
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from futu import RET_OK
 
-from ma_strategy_base import BaseMaCrossStrategy
+from ma_signal import SinglePositionMaSignal
+from realtime_strategy_runner import RealtimeMaStrategyRunner
 
 
-class MaCrossStrategy(BaseMaCrossStrategy):
+class MaCrossStrategy(RealtimeMaStrategyRunner):
     strategy_name = 'single_position_ma_cross'
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.pending_buys = set()
-
-    def get_pending_qty(self, code):
-        return self.order_qty if code in self.pending_buys else 0
-
-    def add_pending_buy(self, code, qty):
-        self.pending_buys.add(code)
-
-    def clear_pending_buy(self, code, qty=None):
-        self.pending_buys.discard(code)
-
-    def can_send_buy(self, code, pos_info, qty):
-        return pos_info is None and code not in self.pending_buys
+    signal_class = SinglePositionMaSignal
 
 
 def main():

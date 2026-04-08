@@ -14,13 +14,20 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from ma_signal import PyramidingMaSignal, SinglePositionMaSignal
 from pyramiding_strategy import PyramidingMaCrossStrategy
 from strategy_example import MaCrossStrategy
 
 
 STRATEGY_REGISTRY = {
-    'single_position_ma': MaCrossStrategy,
-    'pyramiding_ma': PyramidingMaCrossStrategy,
+    'single_position_ma': {
+        'runtime_class': MaCrossStrategy,
+        'signal_class': SinglePositionMaSignal,
+    },
+    'pyramiding_ma': {
+        'runtime_class': PyramidingMaCrossStrategy,
+        'signal_class': PyramidingMaSignal,
+    },
 }
 
 STRATEGY_METADATA = {
@@ -54,6 +61,7 @@ class StrategyManager:
     def __init__(self, registry=None):
         self.registry = registry or STRATEGY_REGISTRY
         self.instances = {}
+        self.signal_instances = {}
 
     def list_strategies(self):
         return sorted(self.registry.keys())
@@ -64,9 +72,16 @@ class StrategyManager:
     def load_strategy(self, name, **kwargs):
         if name not in self.registry:
             raise ValueError(f'未知策略: {name}. 可用策略: {", ".join(self.list_strategies())}')
-        strategy = self.registry[name](**kwargs)
+        strategy = self.registry[name]['runtime_class'](**kwargs)
         self.instances[name] = strategy
         return strategy
+
+    def load_signal(self, name, **kwargs):
+        if name not in self.registry:
+            raise ValueError(f'未知策略: {name}. 可用策略: {", ".join(self.list_strategies())}')
+        signal = self.registry[name]['signal_class'](**kwargs)
+        self.signal_instances[name] = signal
+        return signal
 
     def get_strategy(self, name):
         return self.instances.get(name)
