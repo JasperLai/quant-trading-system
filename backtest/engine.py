@@ -14,8 +14,8 @@ class BacktestEngine:
         initial_cash=100000.0,
         commission_rate=0.001,
         slippage=0.0,
-        stop_loss_pct=-0.03,
-        take_profit_pct=0.05,
+        stop_loss_pct=-0.20,
+        take_profit_pct=0.30,
     ):
         self.signal = signal
         self.portfolio = BacktestPortfolio(
@@ -52,7 +52,7 @@ class BacktestEngine:
                 position_qty=position_qty,
             )
 
-            if decision and decision['buy_signal']:
+            if decision and decision['action'] == 'BUY':
                 bought = self.portfolio.buy(
                     code=code,
                     qty=decision['qty'],
@@ -60,11 +60,15 @@ class BacktestEngine:
                     time_key=time_key,
                     stop_loss_pct=self.stop_loss_pct,
                     take_profit_pct=self.take_profit_pct,
+                    reason=decision['reason'],
                 )
-                if bought:
-                    self.signal.clear_pending_buy(code, decision['qty'])
+                self.signal.clear_pending_buy(code, decision['qty'])
+            elif decision and decision['action'] == 'SELL':
+                sold = self.portfolio.sell(code, close_price, time_key, decision['reason'])
+                if sold is not None:
+                    self.signal.clear_pending_sell(code, decision['qty'])
                 else:
-                    self.signal.clear_pending_buy(code, decision['qty'])
+                    self.signal.clear_pending_sell(code, decision['qty'])
 
             self.portfolio.evaluate_risk(code, close_price, time_key)
             self.portfolio.mark_equity(time_key, latest_prices)

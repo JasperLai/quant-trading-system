@@ -3,7 +3,7 @@
 
 from futu import RET_OK
 
-from backend.strategies.runtime.base import RealtimeMaStrategyRunner
+from backend.strategies.runtime.realtime_runner import RealtimeMaStrategyRunner
 from backend.strategies.signals.ma_signal import PyramidingMaSignal
 
 

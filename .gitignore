@@ -37,6 +37,9 @@ frontend/dist/
 logs/*.log
 *.log
 backtest/cache/
+backend/data/*.sqlite3
+backend/data/*.sqlite3-shm
+backend/data/*.sqlite3-wal
 
 # Local config
 config/local_*.json

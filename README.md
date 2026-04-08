@@ -148,6 +148,12 @@ OpenClaw 收到信号后，会：
 
 ### 4. 启动实时策略
 
+当前均线策略支持：
+
+- 金叉触发 `BUY`
+- 死叉触发 `SELL`
+- `PositionMonitor` 仅负责固定 `-20%` 止损和 `+30%` 止盈兜底
+
 ```bash
 python3 -m backend.cli.run_strategy --strategy single_position_ma --codes SZ.000001
 python3 -m backend.cli.run_strategy --strategy pyramiding_ma --codes SZ.000001 --max-position-per-stock 300

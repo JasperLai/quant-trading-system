@@ -8,7 +8,7 @@
 
 - `/Users/mubinlai/code/quant-trading-system/backend/services/strategy_manager.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/strategies/signals/ma_signal.py`
-- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/base.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/realtime_runner.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/integrations/agent/signal_sender.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/monitoring/position_monitor.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/api/app.py`
@@ -21,7 +21,8 @@
 
 1. 将 API 接入、策略判断、信号发送拆开，避免强耦合。
 2. 让同一套策略逻辑既能用于实时运行，也能用于历史回测。
-3. 将“发出买入意图”和“成交后登记持仓”分离，避免未成交单被误记为持仓。
+3. 将“发出交易意图”和“成交后登记持仓”分离，避免未成交单被误记为持仓。
+4. 将运行状态、持仓和待确认命令落到 SQLite，避免关键状态只存在进程内存。
 
 ## 3. 总体架构
 
@@ -29,11 +30,13 @@
 flowchart LR
     UI["AntD Frontend"] --> API["FastAPI Strategy Service"]
     API --> SM["StrategyManager"]
+    API --> REPO["SQLite Runtime Repository"]
     SM --> RT["Realtime Strategy Runner"]
     RT --> OD["Futu OpenD / OpenQuoteContext"]
     RT --> SG["MA Signal"]
     RT --> SS["Signal Sender"]
     RT --> PM["Position Monitor"]
+    RT --> REPO
     SS --> OC["openclaw agent"]
     PM --> OC
 ```
@@ -74,7 +77,7 @@ flowchart LR
 1. 维护历史 K 线收盘价样本。
 2. 根据 `time_key` 去重并更新样本。
 3. 计算短期/长期 MA。
-4. 根据持仓模型判断是否产生 BUY 信号。
+4. 根据持仓模型判断是否产生 BUY / SELL 信号。
 
 不负责：
 
@@ -89,11 +92,12 @@ flowchart LR
 - `bar_time_keys[code]`：用于按 `time_key` 去重。
 - `last_short_ma / last_long_ma`：上次参考均线值。
 - `pending_buys`：待确认买单状态。
+- `pending_sells`：待确认卖单状态。
 
 ### 4.3 实时运行适配层
 
 文件：
-- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/base.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/realtime_runner.py`
 
 职责：
 
@@ -101,7 +105,7 @@ flowchart LR
 2. 订阅日 K 和实时报价。
 3. 初始化历史日线数据。
 4. 将报价回调转成对纯信号层的调用。
-5. 将 BUY 信号转交给 `signal_sender`。
+5. 将 BUY / SELL 信号转交给 agent 对接层。
 6. 将成交确认后的持仓交给 `position_monitor`。
 
 这里是策略与外部世界之间的桥接层。
@@ -129,9 +133,9 @@ flowchart LR
 1. 保存已成交持仓。
 2. 支持累计加仓后的加权均价。
 3. 在行情更新时检查止损/止盈。
-4. 触发卖出时发送 SELL 信号。
+4. 触发极端风险时发送兜底 SELL 信号。
 
-它不负责决定什么时候买入，只负责管理已经确认成交的仓位。
+它不负责决定正常的策略性买卖，只负责为已成交仓位提供固定 `-20%` 止损和 `+30%` 止盈兜底。
 
 ### 4.6 后台服务
 
@@ -147,11 +151,27 @@ flowchart LR
 
 后台服务不在主进程里直接执行策略逻辑，而是通过 `subprocess.Popen` 启动策略脚本。
 
+### 4.7 Repository 层
+
+文件：
+- `/Users/mubinlai/code/quant-trading-system/backend/repositories/runtime_repository.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/repositories/sqlite.py`
+
+职责：
+
+1. 持久化 `strategy_runs`。
+2. 持久化 `runtime_commands`。
+3. 持久化 `positions`。
+4. 持久化 `pending_orders`。
+5. 为 API 和策略子进程提供共享状态源。
+
+当前 SQLite 不是可选辅助层，而是运行状态的共享仓储层。
+
 ## 5. API 接入设计
 
 实时行情接入全部集中在：
 
-- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/base.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/realtime_runner.py`
 
 当前主要使用了以下 Futu OpenD API：
 
@@ -223,6 +243,30 @@ get_cur_kline(code, long_ma_period + 5, KLType.K_DAY)
 
 - `分钟 K 策略`
 
+### 5.6 运行状态持久化
+
+运行时状态目前采用“进程内热状态 + SQLite 持久化快照”的模式。
+
+SQLite 中有 4 张核心表：
+
+1. `strategy_runs`
+   - 记录 `run_id`、策略名、参数、PID、状态、日志路径
+2. `runtime_commands`
+   - 记录 agent 回调写入的成交确认命令
+3. `positions`
+   - 记录策略子进程同步出的已确认持仓
+4. `pending_orders`
+   - 记录待确认的 BUY / SELL
+
+设计意图是：
+
+- API 不直接改写策略子进程内存
+- API 负责写数据库命令
+- 策略子进程轮询数据库命令并处理
+- 策略子进程把最新持仓和 pending 状态再同步回数据库
+
+这样 API 可以直接从数据库查询状态，而不是依赖活跃子进程的内存对象。
+
 ## 6. 策略实现设计
 
 ### 6.1 数据更新
@@ -238,22 +282,25 @@ get_cur_kline(code, long_ma_period + 5, KLType.K_DAY)
 
 ### 6.2 实时报价评估
 
-纯信号层通过 `evaluate_quote(quote_data, position_qty)` 评估买入意图。
+纯信号层通过 `evaluate_quote(quote_data, position_qty)` 评估交易意图。
 
 核心流程：
 
 1. 样本不足长期均线周期时，不评估。
 2. 计算实时短期/长期 MA。
 3. 用 `last_short_ma / last_long_ma` 与当前值比较。
-4. 满足金叉条件才产生 BUY 意图。
+4. 满足金叉条件产生 BUY 意图，满足死叉条件产生 SELL 意图。
 
-当前买入判定为：
+当前核心判定为：
 
 ```python
 if prev_short_ma <= prev_long_ma and short_ma > long_ma:
+    action = 'BUY'
+elif prev_short_ma >= prev_long_ma and short_ma < long_ma:
+    action = 'SELL'
 ```
 
-这意味着当前策略是“事件驱动的金叉买入”，不是“只要均线多头排列就买入”。
+这意味着当前策略是“事件驱动的金叉买入 / 死叉卖出”，不是“只要当前均线状态满足就立即交易”。
 
 ### 6.3 两种仓位模型
 
@@ -291,14 +338,14 @@ if prev_short_ma <= prev_long_ma and short_ma > long_ma:
 
 ### 7.2 当前解耦方式
 
-当前 BUY 链路分成三段：
+当前 BUY / SELL 链路分成三段：
 
 1. `MA Signal`
-   - 只判断是否应当发 BUY。
+   - 判断是否应当发 BUY 或 SELL。
 
 2. `Realtime Runner`
-   - 只负责把 BUY 意图转换为一次发送动作。
-   - 同时把标的记为 `pending`。
+   - 负责把交易意图转换为一次发送动作。
+   - 同时把标的记为 `pending buy` 或 `pending sell`。
 
 3. 外部执行回报
    - 成交后再调用 `confirm_position(...)`。
@@ -306,10 +353,10 @@ if prev_short_ma <= prev_long_ma and short_ma > long_ma:
 
 因此：
 
-- BUY 信号不等于已持仓。
+- BUY / SELL 信号都不等于已经成交。
 - 持仓状态以成交确认结果为准。
 
-### 7.3 BUY 流程
+### 7.3 策略信号流程
 
 ```mermaid
 sequenceDiagram
@@ -322,7 +369,7 @@ sequenceDiagram
 
     Q->>RT: on_quote(quote)
     RT->>SG: evaluate_quote(quote, position_qty)
-    SG-->>RT: buy_signal / qty
+    SG-->>RT: action / qty
     alt 触发金叉
         RT->>SS: send_signal(BUY)
         SS->>AG: openclaw agent
@@ -330,25 +377,38 @@ sequenceDiagram
         AG-->>RT: 成交确认
         RT->>SG: clear_pending_buy(code, qty)
         RT->>PM: confirm_position(...)
+    else 触发死叉
+        RT->>SS: send_signal(SELL)
+        SS->>AG: openclaw agent
+        RT->>SG: add_pending_sell(code, qty)
+        AG-->>RT: 成交确认
+        RT->>SG: clear_pending_sell(code, qty)
+        RT->>PM: remove_position(...)
     end
 ```
 
 ### 7.4 SELL 流程
 
-SELL 不是由均线策略直接触发，而是由持仓监控模块触发。
+SELL 有两类来源：
+
+1. 策略型 SELL
+   - 例如均线死叉卖出
+
+2. 风控型 SELL
+   - 例如 `PositionMonitor` 的固定 `-20%` 止损和 `+30%` 止盈
 
 流程：
 
 1. 报价进入 `Realtime Runner`
 2. `Realtime Runner` 调用 `monitor.on_tick(code, price)`
-3. 如果触发止损或止盈
-4. `PositionMonitor` 发送 SELL 信号
+3. 如果触发固定止损或止盈
+4. `PositionMonitor` 发送兜底 SELL 信号
 5. 持仓从监控器中移除
 
 这意味着：
 
-- 买入逻辑和卖出风控逻辑分开维护
-- 均线策略不直接处理出场规则
+- 策略负责正常买卖观点
+- `PositionMonitor` 负责极端风险兜底
 
 ## 8. 实时运行时序图
 
@@ -376,13 +436,16 @@ sequenceDiagram
     loop QUOTE 推送
         OD-->>RT: QuoteHandler.on_recv_rsp(quote)
         RT->>SG: evaluate_quote(quote, position_qty)
-        SG-->>RT: buy_signal?/ma values
+        SG-->>RT: action?/ma values
         alt 新金叉
             RT->>SS: send_signal(BUY)
             SS->>AG: openclaw agent
+        else 新死叉
+            RT->>SS: send_signal(SELL)
+            SS->>AG: openclaw agent
         end
         RT->>PM: on_tick(code, price)
-        alt 触发止损/止盈
+        alt 触发固定止损/止盈
             PM->>AG: send SELL signal
         end
     end
@@ -402,11 +465,14 @@ flowchart TD
     H --> I["刷新短期/长期 MA 基线"]
     I --> J["进入 QUOTE 事件循环"]
     J --> K["实时计算 MA"]
-    K --> L{"是否产生新金叉?"}
+    K --> L{"是否产生新金叉/死叉?"}
     L -- 否 --> M["继续等待报价"]
-    L -- 是 --> N["调用 Signal Sender 发 BUY"]
-    N --> O["进入 pending 状态"]
-    O --> M
+    L -- 金叉 --> N["调用 Agent 对接层发 BUY"]
+    L -- 死叉 --> O["调用 Agent 对接层发 SELL"]
+    N --> P["进入 pending buy 状态"]
+    O --> Q["进入 pending sell 状态"]
+    P --> M
+    Q --> M
 ```
 
 ## 10. 后台服务运行模型

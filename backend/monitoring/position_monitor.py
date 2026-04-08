@@ -30,8 +30,8 @@ class PositionMonitor:
         entry_price: float,
         stop_loss: float,
         take_profit: float,
-        stop_loss_pct: float = -0.03,
-        take_profit_pct: float = 0.05,
+        stop_loss_pct: float = -0.20,
+        take_profit_pct: float = 0.30,
         reason: str = "",
     ):
         """登记已成交持仓；如果已有仓位则按加权均价合并。"""

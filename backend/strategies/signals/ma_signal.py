@@ -16,7 +16,7 @@ class BaseMaSignal:
 
     这个类只做两件事：
     1. 维护可用于计算均线的价格序列。
-    2. 在收到最新价格时判断是否产生 BUY 意图。
+    2. 在收到最新价格时判断是否产生 BUY / SELL 意图。
 
     它刻意不接触 OpenD、日志、OpenClaw、持仓监控等运行时依赖，
     这样同一套逻辑既可以被实时策略复用，也可以被回测引擎复用。
@@ -102,7 +102,7 @@ class BaseMaSignal:
         self.last_long_ma[code] = long_ma if long_ma else 0
         return short_ma, long_ma
 
-    def get_pending_qty(self, code):
+    def get_pending_buy_qty(self, code):
         raise NotImplementedError
 
     def add_pending_buy(self, code, qty):
@@ -114,9 +114,21 @@ class BaseMaSignal:
     def can_send_buy(self, code, position_qty, qty):
         raise NotImplementedError
 
+    def get_pending_sell_qty(self, code):
+        raise NotImplementedError
+
+    def add_pending_sell(self, code, qty):
+        raise NotImplementedError
+
+    def clear_pending_sell(self, code, qty=None):
+        raise NotImplementedError
+
+    def can_send_sell(self, code, position_qty, qty):
+        raise NotImplementedError
+
     def evaluate_quote(self, quote_data, position_qty=0):
         """
-        在最新报价到达时评估是否产生 BUY 意图。
+        在最新报价到达时评估是否产生 BUY / SELL 意图。
         """
         code = quote_data['code']
         price = quote_data['last_price']
@@ -141,13 +153,23 @@ class BaseMaSignal:
         self.last_long_ma[code] = long_ma
 
         qty = self.order_qty
-        should_buy = False
+        action = None
+        signal_qty = 0
+        reason = None
 
-        # 当前采用“新金叉事件触发”模型。
+        # 当前采用“新金叉 / 新死叉事件触发”模型。
         if prev_short_ma <= prev_long_ma and short_ma > long_ma:
-            should_buy = self.can_send_buy(code, position_qty, qty)
-            if should_buy:
+            if self.can_send_buy(code, position_qty, qty):
                 self.add_pending_buy(code, qty)
+                action = 'BUY'
+                signal_qty = qty
+                reason = '均线金叉买入'
+        elif prev_short_ma >= prev_long_ma and short_ma < long_ma:
+            signal_qty = position_qty
+            if self.can_send_sell(code, position_qty, signal_qty):
+                self.add_pending_sell(code, signal_qty)
+                action = 'SELL'
+                reason = '均线死叉卖出'
 
         return {
             'code': code,
@@ -156,8 +178,9 @@ class BaseMaSignal:
             'long_ma': long_ma,
             'prev_short_ma': prev_short_ma,
             'prev_long_ma': prev_long_ma,
-            'buy_signal': should_buy,
-            'qty': qty if should_buy else 0,
+            'action': action,
+            'reason': reason,
+            'qty': signal_qty if action is not None else 0,
         }
 
 
@@ -169,8 +192,9 @@ class SinglePositionMaSignal(BaseMaSignal):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pending_buys = set()
+        self.pending_sells = set()
 
-    def get_pending_qty(self, code):
+    def get_pending_buy_qty(self, code):
         return self.order_qty if code in self.pending_buys else 0
 
     def add_pending_buy(self, code, qty):
@@ -182,6 +206,18 @@ class SinglePositionMaSignal(BaseMaSignal):
     def can_send_buy(self, code, position_qty, qty):
         return position_qty == 0 and code not in self.pending_buys
 
+    def get_pending_sell_qty(self, code):
+        return 1 if code in self.pending_sells else 0
+
+    def add_pending_sell(self, code, qty):
+        self.pending_sells.add(code)
+
+    def clear_pending_sell(self, code, qty=None):
+        self.pending_sells.discard(code)
+
+    def can_send_sell(self, code, position_qty, qty):
+        return position_qty > 0 and code not in self.pending_sells and qty > 0
+
 
 class PyramidingMaSignal(BaseMaSignal):
     """加仓模型：允许继续买，但总仓位不能超过单标的上限。"""
@@ -192,8 +228,9 @@ class PyramidingMaSignal(BaseMaSignal):
         super().__init__(*args, **kwargs)
         self.max_position_per_stock = max_position_per_stock
         self.pending_buys = {}
+        self.pending_sells = {}
 
-    def get_pending_qty(self, code):
+    def get_pending_buy_qty(self, code):
         return self.pending_buys.get(code, 0)
 
     def add_pending_buy(self, code, qty):
@@ -209,5 +246,23 @@ class PyramidingMaSignal(BaseMaSignal):
 
     def can_send_buy(self, code, position_qty, qty):
         # 已成交仓位和待确认仓位都要计入上限。
-        pending_qty = self.get_pending_qty(code)
+        pending_qty = self.get_pending_buy_qty(code)
         return position_qty + pending_qty + qty <= self.max_position_per_stock
+
+    def get_pending_sell_qty(self, code):
+        return self.pending_sells.get(code, 0)
+
+    def add_pending_sell(self, code, qty):
+        self.pending_sells[code] = self.pending_sells.get(code, 0) + qty
+
+    def clear_pending_sell(self, code, qty=None):
+        if code not in self.pending_sells:
+            return
+        if qty is None or qty >= self.pending_sells[code]:
+            self.pending_sells.pop(code, None)
+            return
+        self.pending_sells[code] -= qty
+
+    def can_send_sell(self, code, position_qty, qty):
+        pending_qty = self.get_pending_sell_qty(code)
+        return position_qty > 0 and qty > 0 and pending_qty == 0

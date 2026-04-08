@@ -1,6 +1,9 @@
 import importlib.util
 import importlib
+import json
+import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -71,14 +74,32 @@ class FakeMonitor:
     def __init__(self):
         self.positions = {}
         self.add_calls = []
+        self.remove_calls = []
         self.tick_calls = []
 
     def add_position(self, **kwargs):
-        self.positions[kwargs['code']] = kwargs
+        normalized = {
+            'qty': kwargs['qty'],
+            'entry': kwargs['entry_price'],
+            'stop': kwargs['stop_loss'],
+            'profit': kwargs['take_profit'],
+            'stop_pct': kwargs.get('stop_loss_pct', -0.20),
+            'profit_pct': kwargs.get('take_profit_pct', 0.30),
+            'reason': kwargs.get('reason'),
+            'entry_time': kwargs.get('entry_time'),
+        }
+        self.positions[kwargs['code']] = normalized
         self.add_calls.append(kwargs)
 
     def get_position_info(self, code):
         return self.positions.get(code)
+
+    def get_all_positions(self):
+        return dict(self.positions)
+
+    def remove_position(self, code):
+        self.positions.pop(code, None)
+        self.remove_calls.append(code)
 
     def on_tick(self, code, price):
         self.tick_calls.append((code, price))
@@ -102,7 +123,11 @@ class StrategyTest(unittest.TestCase):
         def send_signal(code, action, price, quantity, note=''):
             cls.fake_signal_sender.calls.append((code, action, price, quantity, note))
 
+        def send_agent_message(message, log_prefix='消息'):
+            cls.fake_signal_sender.calls.append(('AGENT', log_prefix, message))
+
         cls.fake_signal_sender.send_signal = send_signal
+        cls.fake_signal_sender.send_agent_message = send_agent_message
 
         cls.fake_position_monitor = types.ModuleType('position_monitor')
         cls.fake_position_monitor.PositionMonitor = FakeMonitor
@@ -121,8 +146,9 @@ class StrategyTest(unittest.TestCase):
         sys.modules['backend.monitoring.position_monitor'] = cls.fake_position_monitor
 
         sys.path.insert(0, str(ROOT))
+        os.environ['QTS_RUNTIME_DB_PATH'] = str(ROOT / 'backend' / 'data' / 'test-runtime.sqlite3')
         cls.signal_module = importlib.import_module('backend.strategies.signals.ma_signal')
-        cls.runner_module = importlib.import_module('backend.strategies.runtime.base')
+        cls.runner_module = importlib.import_module('backend.strategies.runtime.realtime_runner')
         cls.single_module = importlib.import_module('backend.strategies.runtime.single_position')
         cls.pyramiding_module = importlib.import_module('backend.strategies.runtime.pyramiding')
         cls.manager_module = importlib.import_module('backend.services.strategy_manager')
@@ -189,6 +215,63 @@ class StrategyTest(unittest.TestCase):
 
         self.assertNotIn(code, strategy.pending_buys)
         self.assertEqual(1, len(strategy.monitor.add_calls))
+
+    def test_single_strategy_dead_cross_creates_pending_sell_only(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        code = 'HK.00700'
+        strategy.prices[code] = [10.0] * 19 + [11.0]
+        strategy.bar_time_keys[code] = [f'2026-01-{idx + 1:02d} 00:00:00' for idx in range(20)]
+        strategy.last_short_ma[code] = strategy.calculate_ma(strategy.prices[code], strategy.short_ma_period)
+        strategy.last_long_ma[code] = strategy.calculate_ma(strategy.prices[code], strategy.long_ma_period)
+        strategy.monitor.positions[code] = {'qty': 100}
+
+        strategy.on_quote({'code': code, 'last_price': 1.0})
+
+        self.assertEqual(('HK.00700', 'SELL', 1.0, 100, '均线死叉卖出'), self.fake_signal_sender.calls[0])
+        self.assertIn(code, strategy.pending_sells)
+
+    def test_confirm_exit_clears_pending_sell_and_removes_position(self):
+        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        code = 'HK.00700'
+        strategy.pending_sells.add(code)
+        strategy.monitor.positions[code] = {'qty': 100}
+
+        strategy.confirm_exit(code=code, qty=100, exit_price=19.0)
+
+        self.assertNotIn(code, strategy.pending_sells)
+        self.assertEqual([code], strategy.monitor.remove_calls)
+
+    def test_process_control_commands_handles_confirm_buy_and_sell(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            repository.upsert_run(
+                run_id='run-test',
+                strategy_name='single_position_ma',
+                config={},
+                pid=1234,
+                status='running',
+            )
+            repository.enqueue_command('run-test', 'confirm_buy', {'action': 'confirm_buy', 'code': 'HK.00700', 'qty': 100, 'entry_price': 20.0})
+            repository.enqueue_command('run-test', 'confirm_sell', {'action': 'confirm_sell', 'code': 'HK.00700', 'qty': 100, 'exit_price': 21.5})
+            strategy = self.single_module.MaCrossStrategy(
+                codes=['HK.00700'],
+                short_ma=5,
+                long_ma=20,
+                run_id='run-test',
+                db_path=str(db_path),
+            )
+
+            strategy.process_control_commands()
+
+            self.assertEqual(1, len(strategy.monitor.add_calls))
+            self.assertEqual(['HK.00700'], strategy.monitor.remove_calls)
+            executions = repository.list_executions('run-test')
+            self.assertEqual(2, len(executions))
+            self.assertEqual('BUY', executions[0]['side'])
+            self.assertEqual(20.0, executions[0]['price'])
+            self.assertEqual('SELL', executions[1]['side'])
+            self.assertEqual(21.5, executions[1]['price'])
 
     def test_pyramiding_strategy_respects_max_position(self):
         strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
@@ -281,6 +364,33 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual('TAKE_PROFIT', result['trades'][1]['reason'])
         self.assertEqual({}, result['open_positions'])
         self.assertGreater(result['summary']['final_equity'], result['summary']['initial_cash'])
+
+    def test_backtest_engine_can_exit_on_dead_cross(self):
+        signal = self.signal_module.SinglePositionMaSignal(codes=['SZ.000001'], short_ma=2, long_ma=3, order_qty=100)
+        engine = self.backtest_engine_module.BacktestEngine(
+            signal=signal,
+            initial_cash=100000.0,
+            commission_rate=0.0,
+            slippage=0.0,
+            stop_loss_pct=-0.50,
+            take_profit_pct=0.30,
+        )
+        bars_by_code = {
+            'SZ.000001': [
+                {'code': 'SZ.000001', 'time_key': '2026-01-01 00:00:00', 'close': 10.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-02 00:00:00', 'close': 10.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-03 00:00:00', 'close': 9.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-04 00:00:00', 'close': 12.0},
+                {'code': 'SZ.000001', 'time_key': '2026-01-05 00:00:00', 'close': 5.0},
+            ]
+        }
+
+        result = engine.run(bars_by_code)
+
+        self.assertEqual(2, len(result['trades']))
+        self.assertEqual('BUY', result['trades'][0]['side'])
+        self.assertEqual('SELL', result['trades'][1]['side'])
+        self.assertEqual('均线死叉卖出', result['trades'][1]['reason'])
 
 
 if __name__ == '__main__':

@@ -99,6 +99,8 @@ def parse_args():
     parser.add_argument('--long-ma', type=int, default=None, help='长期均线周期')
     parser.add_argument('--order-qty', type=int, default=None, help='单次下单数量')
     parser.add_argument('--max-position-per-stock', type=int, default=None, help='加仓策略的单标的最大仓位')
+    parser.add_argument('--run-id', default=None, help='运行实例 ID，用于外部控制回调')
+    parser.add_argument('--db-path', default=None, help='SQLite 数据库路径')
     return parser.parse_args()
 
 
@@ -114,6 +116,10 @@ def build_strategy_kwargs(args):
         kwargs['order_qty'] = args.order_qty
     if args.max_position_per_stock is not None and args.strategy == 'pyramiding_ma':
         kwargs['max_position_per_stock'] = args.max_position_per_stock
+    if args.run_id is not None:
+        kwargs['run_id'] = args.run_id
+    if args.db_path is not None:
+        kwargs['db_path'] = args.db_path
     return kwargs
 
 
