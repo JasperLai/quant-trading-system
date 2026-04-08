@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""
-有上限加仓版均线交叉策略。
-
-允许在单标的持仓未达到上限时继续发 BUY，
-并把待确认买单数量计入可用仓位判断。
-"""
+"""有上限加仓版实时均线策略。"""
 
 from futu import RET_OK
 
-from ma_signal import PyramidingMaSignal
-from realtime_strategy_runner import RealtimeMaStrategyRunner
+from backend.strategies.runtime.base import RealtimeMaStrategyRunner
+from backend.strategies.signals.ma_signal import PyramidingMaSignal
 
 
 class PyramidingMaCrossStrategy(RealtimeMaStrategyRunner):
@@ -23,7 +18,7 @@ class PyramidingMaCrossStrategy(RealtimeMaStrategyRunner):
 
 def main():
     strategy = PyramidingMaCrossStrategy()
-    ret, state = strategy.quote_ctx.get_global_state()
+    ret, state = strategy.gateway.get_global_state()
     if ret != RET_OK:
         print(f"无法连接 OpenD: {state}")
         print("请确保 OpenD 已启动并登录")

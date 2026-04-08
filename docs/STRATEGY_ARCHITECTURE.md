@@ -6,12 +6,12 @@
 
 文档基于以下实现文件：
 
-- `/Users/mubinlai/code/quant-trading-system/scripts/strategy_manager.py`
-- `/Users/mubinlai/code/quant-trading-system/scripts/ma_signal.py`
-- `/Users/mubinlai/code/quant-trading-system/scripts/realtime_strategy_runner.py`
-- `/Users/mubinlai/code/quant-trading-system/scripts/signal_sender.py`
-- `/Users/mubinlai/code/quant-trading-system/scripts/position_monitor.py`
-- `/Users/mubinlai/code/quant-trading-system/backend/app.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/services/strategy_manager.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/signals/ma_signal.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/base.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/integrations/agent/signal_sender.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/position_monitor.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/api/app.py`
 
 本文档描述的是当前实现，不是理想化方案。
 
@@ -43,7 +43,7 @@ flowchart LR
 ### 4.1 StrategyManager
 
 文件：
-- `/Users/mubinlai/code/quant-trading-system/scripts/strategy_manager.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/services/strategy_manager.py`
 
 职责：
 
@@ -67,7 +67,7 @@ flowchart LR
 ### 4.2 纯信号层
 
 文件：
-- `/Users/mubinlai/code/quant-trading-system/scripts/ma_signal.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/signals/ma_signal.py`
 
 职责：
 
@@ -93,7 +93,7 @@ flowchart LR
 ### 4.3 实时运行适配层
 
 文件：
-- `/Users/mubinlai/code/quant-trading-system/scripts/realtime_strategy_runner.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/base.py`
 
 职责：
 
@@ -109,7 +109,7 @@ flowchart LR
 ### 4.4 Signal Sender
 
 文件：
-- `/Users/mubinlai/code/quant-trading-system/scripts/signal_sender.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/integrations/agent/signal_sender.py`
 
 职责：
 
@@ -122,7 +122,7 @@ flowchart LR
 ### 4.5 Position Monitor
 
 文件：
-- `/Users/mubinlai/code/quant-trading-system/scripts/position_monitor.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/position_monitor.py`
 
 职责：
 
@@ -151,7 +151,7 @@ flowchart LR
 
 实时行情接入全部集中在：
 
-- `/Users/mubinlai/code/quant-trading-system/scripts/realtime_strategy_runner.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/base.py`
 
 当前主要使用了以下 Futu OpenD API：
 
@@ -422,7 +422,7 @@ flowchart TD
 当前实现方式：
 
 1. `POST /api/runs`
-2. 构造 `python3 scripts/strategy_manager.py ...`
+2. 构造 `python3 -m backend.cli.run_strategy ...`
 3. 用 `subprocess.Popen(...)` 启动
 4. 输出重定向到 `backend/logs/<run_id>.log`
 5. 前端通过日志接口读取尾部内容
@@ -439,7 +439,7 @@ OpenD 相关代码集中在 `Realtime Runner`，不会污染策略判断层。
 
 ### 11.3 发送通道可替换
 
-如果未来不再使用 `openclaw agent`，只需要替换 `signal_sender.py`。
+如果未来不再使用 `openclaw agent`，只需要替换 agent 对接层实现。
 
 ### 11.4 成交与持仓状态一致
 
@@ -451,7 +451,7 @@ OpenD 相关代码集中在 `Realtime Runner`，不会污染策略判断层。
 
 1. `confirm_position(...)` 还未接入正式的成交回报链路，需要外部调用。
 2. `PositionMonitor` 仍是进程内存状态，没有持久化。
-3. `signal_sender.py` 和 `position_monitor.py` 还保留 `TEST_MODE`。
+3. agent 对接层仍保留 `TEST_MODE`。
 4. 启动后如果已经是多头状态，不会补发 BUY，因为当前采用的是“新金叉事件”模型。
 5. 回测与实时虽然共用信号层，但执行与持仓模型仍可以继续抽象。
 
@@ -461,6 +461,5 @@ OpenD 相关代码集中在 `Realtime Runner`，不会污染策略判断层。
 
 1. 增加正式的成交确认回调接口，将 `confirm_position(...)` 接入后台服务。
 2. 将持仓、pending、运行参数持久化。
-3. 将 `signal_sender` 抽象为统一执行网关接口。
+3. 继续扩展 agent 对接层为统一执行网关接口。
 4. 把实时数据接入层继续抽象为 `MarketDataAdapter`，为未来替换行情源做准备。
-

@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""
-单仓版均线交叉策略。
-
-同一标的同一时间只允许一笔正式持仓，
-买入成交前只保留一个 pending BUY。
-"""
+"""单仓版实时均线策略。"""
 
 from futu import RET_OK
 
-from ma_signal import SinglePositionMaSignal
-from realtime_strategy_runner import RealtimeMaStrategyRunner
+from backend.strategies.runtime.base import RealtimeMaStrategyRunner
+from backend.strategies.signals.ma_signal import SinglePositionMaSignal
 
 
 class MaCrossStrategy(RealtimeMaStrategyRunner):
@@ -19,7 +14,7 @@ class MaCrossStrategy(RealtimeMaStrategyRunner):
 
 def main():
     strategy = MaCrossStrategy()
-    ret, state = strategy.quote_ctx.get_global_state()
+    ret, state = strategy.gateway.get_global_state()
     if ret != RET_OK:
         print(f"无法连接 OpenD: {state}")
         print("请确保 OpenD 已启动并登录")

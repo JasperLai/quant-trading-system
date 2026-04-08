@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
 """
 均线策略纯信号层。
-
-负责：
-1. 维护历史 K 线样本
-2. 计算短期/长期 MA
-3. 根据持仓和 pending 状态决定是否发出 BUY 信号
-
-不负责：
-1. OpenD 连接
-2. 信号发送
-3. 持仓落地与风控执行
 """
 
 SHORT_MA = 5
@@ -21,31 +11,43 @@ HISTORY_BUFFER_BARS = 10
 
 
 class BaseMaSignal:
+    """
+    均线策略的纯信号基类。
+
+    这个类只做两件事：
+    1. 维护可用于计算均线的价格序列。
+    2. 在收到最新价格时判断是否产生 BUY 意图。
+
+    它刻意不接触 OpenD、日志、OpenClaw、持仓监控等运行时依赖，
+    这样同一套逻辑既可以被实时策略复用，也可以被回测引擎复用。
+    """
+
     strategy_name = 'base_ma_cross'
 
-    def __init__(
-        self,
-        codes=CODES,
-        short_ma=SHORT_MA,
-        long_ma=LONG_MA,
-        order_qty=DEFAULT_ORDER_QTY,
-    ):
+    def __init__(self, codes=CODES, short_ma=SHORT_MA, long_ma=LONG_MA, order_qty=DEFAULT_ORDER_QTY):
         self.codes = list(codes)
         self.short_ma_period = short_ma
         self.long_ma_period = long_ma
         self.order_qty = order_qty
 
+        # prices 和 bar_time_keys 一起维护一条按 time_key 去重的日线序列。
         self.prices = {code: [] for code in self.codes}
         self.bar_time_keys = {code: [] for code in self.codes}
+
+        # last_short_ma / last_long_ma 保存上一次已经对外生效的均线状态。
         self.last_short_ma = {code: 0 for code in self.codes}
         self.last_long_ma = {code: 0 for code in self.codes}
 
     def calculate_ma(self, prices, period):
+        """计算简单移动平均线；样本不足时返回 None。"""
         if len(prices) < period:
             return None
         return sum(prices[-period:]) / period
 
     def calculate_live_ma(self, code, latest_price):
+        """
+        用最新报价覆盖最后一根日线收盘价，计算盘中实时均线。
+        """
         history = self.prices[code]
         if len(history) < self.long_ma_period:
             return None, None
@@ -56,6 +58,9 @@ class BaseMaSignal:
         return short_ma, long_ma
 
     def update_bar(self, bar_data):
+        """
+        更新历史 bar 样本，并按 time_key 去重。
+        """
         code = bar_data['code']
         close_price = bar_data['close']
         time_key = bar_data.get('time_key')
@@ -88,6 +93,9 @@ class BaseMaSignal:
         }
 
     def refresh_reference_ma(self, code):
+        """
+        用当前历史样本刷新参考均线。
+        """
         short_ma = self.calculate_ma(self.prices[code], self.short_ma_period)
         long_ma = self.calculate_ma(self.prices[code], self.long_ma_period)
         self.last_short_ma[code] = short_ma if short_ma else 0
@@ -107,6 +115,9 @@ class BaseMaSignal:
         raise NotImplementedError
 
     def evaluate_quote(self, quote_data, position_qty=0):
+        """
+        在最新报价到达时评估是否产生 BUY 意图。
+        """
         code = quote_data['code']
         price = quote_data['last_price']
 
@@ -117,6 +128,7 @@ class BaseMaSignal:
         if short_ma is None or long_ma is None:
             return None
 
+        # 轻量去抖：报价变化过小不重复向上层报告。
         if (
             abs(short_ma - self.last_short_ma[code]) < 0.01
             and abs(long_ma - self.last_long_ma[code]) < 0.01
@@ -130,6 +142,8 @@ class BaseMaSignal:
 
         qty = self.order_qty
         should_buy = False
+
+        # 当前采用“新金叉事件触发”模型。
         if prev_short_ma <= prev_long_ma and short_ma > long_ma:
             should_buy = self.can_send_buy(code, position_qty, qty)
             if should_buy:
@@ -148,6 +162,8 @@ class BaseMaSignal:
 
 
 class SinglePositionMaSignal(BaseMaSignal):
+    """单仓模型：有持仓或已有 pending BUY 时不再继续买。"""
+
     strategy_name = 'single_position_ma_cross'
 
     def __init__(self, *args, **kwargs):
@@ -168,6 +184,8 @@ class SinglePositionMaSignal(BaseMaSignal):
 
 
 class PyramidingMaSignal(BaseMaSignal):
+    """加仓模型：允许继续买，但总仓位不能超过单标的上限。"""
+
     strategy_name = 'pyramiding_ma_cross'
 
     def __init__(self, *args, max_position_per_stock=300, **kwargs):
@@ -190,5 +208,6 @@ class PyramidingMaSignal(BaseMaSignal):
         self.pending_buys[code] -= qty
 
     def can_send_buy(self, code, position_qty, qty):
+        # 已成交仓位和待确认仓位都要计入上限。
         pending_qty = self.get_pending_qty(code)
         return position_qty + pending_qty + qty <= self.max_position_per_stock

@@ -1,4 +1,5 @@
 import importlib.util
+import importlib
 import sys
 import types
 import unittest
@@ -7,7 +8,6 @@ from unittest import mock
 
 
 ROOT = Path('/Users/mubinlai/code/quant-trading-system')
-SCRIPTS = ROOT / 'scripts'
 
 
 class FakeFrame:
@@ -117,17 +117,16 @@ class StrategyTest(unittest.TestCase):
         futu.AuType = types.SimpleNamespace(QFQ='QFQ')
 
         sys.modules['futu'] = futu
-        sys.modules['signal_sender'] = cls.fake_signal_sender
-        sys.modules['position_monitor'] = cls.fake_position_monitor
+        sys.modules['backend.integrations.agent.signal_sender'] = cls.fake_signal_sender
+        sys.modules['backend.monitoring.position_monitor'] = cls.fake_position_monitor
 
         sys.path.insert(0, str(ROOT))
-        cls.signal_module = load_module('ma_signal', SCRIPTS / 'ma_signal.py')
-        cls.runner_module = load_module('realtime_strategy_runner', SCRIPTS / 'realtime_strategy_runner.py')
-        cls.base_module = load_module('ma_strategy_base', SCRIPTS / 'ma_strategy_base.py')
-        cls.single_module = load_module('strategy_example', SCRIPTS / 'strategy_example.py')
-        cls.pyramiding_module = load_module('pyramiding_strategy', SCRIPTS / 'pyramiding_strategy.py')
-        cls.manager_module = load_module('strategy_manager', SCRIPTS / 'strategy_manager.py')
-        cls.backtest_engine_module = load_module('backtest.engine', ROOT / 'backtest' / 'engine.py')
+        cls.signal_module = importlib.import_module('backend.strategies.signals.ma_signal')
+        cls.runner_module = importlib.import_module('backend.strategies.runtime.base')
+        cls.single_module = importlib.import_module('backend.strategies.runtime.single_position')
+        cls.pyramiding_module = importlib.import_module('backend.strategies.runtime.pyramiding')
+        cls.manager_module = importlib.import_module('backend.services.strategy_manager')
+        cls.backtest_engine_module = importlib.import_module('backtest.engine')
 
     def setUp(self):
         self.fake_signal_sender.calls.clear()
@@ -165,7 +164,7 @@ class StrategyTest(unittest.TestCase):
             strategy.start()
 
         self.assertEqual(1, len(strategy.quote_ctx.handlers))
-        self.assertIsInstance(strategy.quote_ctx.handlers[0], self.base_module.QuoteHandler)
+        self.assertIsInstance(strategy.quote_ctx.handlers[0], self.runner_module.QuoteHandler)
         self.assertEqual(
             [(['HK.00700'], ['K_DAY']), (['HK.00700'], ['QUOTE'])],
             strategy.quote_ctx.subscriptions,

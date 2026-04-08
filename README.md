@@ -72,15 +72,14 @@ numpy==2.0.2
 ```
 quant-trading-system/
 ├── README.md
-├── backend/                     # FastAPI 后台服务
+├── backend/
+│   ├── api/                     # FastAPI 服务层
+│   ├── cli/                     # CLI 入口
+│   ├── integrations/            # OpenD / agent 对接层
+│   ├── monitoring/              # 持仓监控
+│   ├── services/                # 策略管理服务
+│   └── strategies/              # 策略信号层与实时运行层
 ├── backtest/                    # 历史 K 线回测
-├── scripts/
-│   ├── ma_signal.py             # 纯策略信号层
-│   ├── realtime_strategy_runner.py  # OpenD 实时运行适配层
-│   ├── strategy_manager.py      # 策略注册与加载
-│   ├── strategy_example.py      # 单仓均线策略
-│   ├── pyramiding_strategy.py   # 有上限加仓策略
-│   └── signal_sender.py         # 信号发送
 ├── config/
 │   └── futu_config.json          # 富途配置
 ├── frontend/                    # Ant Design 管理页面
@@ -150,8 +149,8 @@ OpenClaw 收到信号后，会：
 ### 4. 启动实时策略
 
 ```bash
-python3 scripts/strategy_manager.py --strategy single_position_ma --codes SZ.000001
-python3 scripts/strategy_manager.py --strategy pyramiding_ma --codes SZ.000001 --max-position-per-stock 300
+python3 -m backend.cli.run_strategy --strategy single_position_ma --codes SZ.000001
+python3 -m backend.cli.run_strategy --strategy pyramiding_ma --codes SZ.000001 --max-position-per-stock 300
 ```
 
 ### 5. 运行历史回测

@@ -1,30 +1,20 @@
 #!/usr/bin/env python3
-"""
-均线策略实时运行适配层。
+"""均线策略实时运行适配层。"""
 
-负责：
-1. OpenD 连接、订阅与回调
-2. 纯信号层与 signal_sender / position_monitor 的桥接
-3. 成交确认后持仓登记
-"""
-
-import os
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from futu import RET_ERROR, RET_OK, StockQuoteHandlerBase
 
-from futu import *  # noqa: F403
-
-import position_monitor
-import signal_sender
+from backend.integrations.agent.signal_sender import send_signal
+from backend.integrations.futu.quote_gateway import FutuQuoteGateway
+from backend.monitoring.position_monitor import PositionMonitor
 
 STOP_LOSS_PCT = -0.03
 TAKE_PROFIT_PCT = 0.05
 
 
 class QuoteHandler(StockQuoteHandlerBase):
-    """实时报价回调"""
+    """实时报价回调。"""
 
     def __init__(self, strategy):
         self.strategy = strategy
@@ -46,6 +36,8 @@ class QuoteHandler(StockQuoteHandlerBase):
 
 
 class RealtimeMaStrategyRunner:
+    """连接行情源并驱动纯信号层的运行时适配器。"""
+
     strategy_name = 'realtime_ma_cross'
     signal_class = None
 
@@ -58,12 +50,13 @@ class RealtimeMaStrategyRunner:
         self.short_ma_period = self.signal.short_ma_period
         self.long_ma_period = self.signal.long_ma_period
         self.order_qty = self.signal.order_qty
-        self.host = host
-        self.port = port
-
-        self.quote_ctx = OpenQuoteContext(host=host, port=port)
-        self.monitor = position_monitor.PositionMonitor()
+        self.gateway = FutuQuoteGateway(host=host, port=port)
+        self.monitor = PositionMonitor()
         self.quote_handler = QuoteHandler(self)
+
+    @property
+    def quote_ctx(self):
+        return self.gateway.context
 
     @property
     def prices(self):
@@ -110,7 +103,7 @@ class RealtimeMaStrategyRunner:
 
     def on_buy_signal(self, code, price, qty):
         print(f"🟢 金叉信号！买入 {code} @ {price}")
-        signal_sender.send_signal(code, 'BUY', price, qty, '均线金叉买入')
+        send_signal(code, 'BUY', price, qty, '均线金叉买入')
         print(f"🟡 买入待确认: {code}，等待 agent 成交后登记持仓", flush=True)
 
     def on_quote(self, quote_data):
@@ -165,20 +158,20 @@ class RealtimeMaStrategyRunner:
         print(f"止盈比例: {TAKE_PROFIT_PCT:.1%}", flush=True)
         print("=" * 50, flush=True)
 
-        ret = self.quote_ctx.set_handler(self.quote_handler)
+        ret = self.gateway.set_handler(self.quote_handler)
         if ret != RET_OK:
             print("报价回调处理器设置失败", flush=True)
             return
 
         print("正在订阅日K线...", flush=True)
-        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.K_DAY], subscribe_push=False)
+        ret, data = self.gateway.subscribe_daily_bars(self.codes)
         if ret != RET_OK:
             print(f"日K订阅失败: {data}", flush=True)
             return
         print("日K订阅成功", flush=True)
 
         print("正在订阅实时报价...", flush=True)
-        ret, data = self.quote_ctx.subscribe(self.codes, [SubType.QUOTE])
+        ret, data = self.gateway.subscribe_quotes(self.codes)
         if ret != RET_OK:
             print(f"报价订阅失败: {data}", flush=True)
             return
@@ -186,7 +179,7 @@ class RealtimeMaStrategyRunner:
 
         print("初始化历史K线数据...", flush=True)
         for code in self.codes:
-            ret, data = self.quote_ctx.get_cur_kline(code, self.long_ma_period + 5, KLType.K_DAY)
+            ret, data = self.gateway.get_daily_bars(code, self.long_ma_period + 5)
             if ret == RET_OK:
                 for bar in data.to_dict('records'):
                     self.on_bar(bar)
@@ -201,10 +194,7 @@ class RealtimeMaStrategyRunner:
                 print(f"  {code}: 获取失败 {data}", flush=True)
 
         print("\n=== 策略初始化完成，等待实时报价... ===", flush=True)
-        print(
-            f"当前均线状态: 短期MA({self.short_ma_period}) vs 长期MA({self.long_ma_period})",
-            flush=True,
-        )
+        print(f"当前均线状态: 短期MA({self.short_ma_period}) vs 长期MA({self.long_ma_period})", flush=True)
         for code in self.codes:
             print(
                 f"  {code}: "
@@ -222,6 +212,5 @@ class RealtimeMaStrategyRunner:
             self.stop()
 
     def stop(self):
-        self.quote_ctx.stop()
-        self.quote_ctx.close()
+        self.gateway.stop()
         print("策略已停止")

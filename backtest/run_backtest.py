@@ -5,18 +5,15 @@
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = ROOT / 'scripts'
-sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(ROOT))
 
 from backtest.data_provider import FutuHistoryDataProvider
 from backtest.engine import BacktestEngine
-from strategy_manager import STRATEGY_METADATA, StrategyManager
+from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
 
 
 def parse_args():

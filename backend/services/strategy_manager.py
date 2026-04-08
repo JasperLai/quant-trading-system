@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
-"""
-策略管理模块。
-
-负责：
-1. 注册可用策略
-2. 根据名称加载策略
-3. 启动指定策略
-"""
+"""策略管理模块。"""
 
 import argparse
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from ma_signal import PyramidingMaSignal, SinglePositionMaSignal
-from pyramiding_strategy import PyramidingMaCrossStrategy
-from strategy_example import MaCrossStrategy
+from backend.strategies.runtime.pyramiding import PyramidingMaCrossStrategy
+from backend.strategies.runtime.single_position import MaCrossStrategy
+from backend.strategies.signals.ma_signal import PyramidingMaSignal, SinglePositionMaSignal
 
 
 STRATEGY_REGISTRY = {
+    # 同一个策略名同时注册两套实现：
+    # 1. runtime_class: 用于实时运行，内部会连接 OpenD 并处理订阅/回调。
+    # 2. signal_class:  用于回测或纯逻辑测试，不依赖外部运行环境。
     'single_position_ma': {
         'runtime_class': MaCrossStrategy,
         'signal_class': SinglePositionMaSignal,
@@ -31,6 +23,7 @@ STRATEGY_REGISTRY = {
 }
 
 STRATEGY_METADATA = {
+    # 前端和后台展示、默认参数装配都依赖这份 metadata。
     'single_position_ma': {
         'name': 'single_position_ma',
         'title': '单仓均线策略',
@@ -58,6 +51,12 @@ STRATEGY_METADATA = {
 
 
 class StrategyManager:
+    """
+    策略管理器。
+
+    负责维护策略注册表，并为实时运行与回测提供统一加载入口。
+    """
+
     def __init__(self, registry=None):
         self.registry = registry or STRATEGY_REGISTRY
         self.instances = {}
@@ -94,12 +93,7 @@ class StrategyManager:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='策略管理器')
-    parser.add_argument(
-        '--strategy',
-        default='single_position_ma',
-        choices=sorted(STRATEGY_REGISTRY.keys()),
-        help='要启动的策略名称',
-    )
+    parser.add_argument('--strategy', default='single_position_ma', choices=sorted(STRATEGY_REGISTRY.keys()), help='要启动的策略名称')
     parser.add_argument('--codes', nargs='+', default=None, help='股票列表，如 SZ.000001 HK.03690')
     parser.add_argument('--short-ma', type=int, default=None, help='短期均线周期')
     parser.add_argument('--long-ma', type=int, default=None, help='长期均线周期')
