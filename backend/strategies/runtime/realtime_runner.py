@@ -6,13 +6,14 @@ import time
 
 from futu import RET_ERROR, RET_OK, StockQuoteHandlerBase
 
+from backend.core.config import DEFAULT_HOST, DEFAULT_PORT, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from backend.core.logging import get_logger
 from backend.integrations.agent.signal_sender import send_signal
 from backend.integrations.futu.quote_gateway import FutuQuoteGateway
 from backend.monitoring.position_monitor import PositionMonitor
 from backend.repositories.runtime_repository import RuntimeRepository
 
-STOP_LOSS_PCT = -0.20
-TAKE_PROFIT_PCT = 0.30
+logger = get_logger(__name__)
 
 
 class QuoteHandler(StockQuoteHandlerBase):
@@ -24,14 +25,16 @@ class QuoteHandler(StockQuoteHandlerBase):
     def on_recv_rsp(self, rsp_pb):
         ret_code, data = super().on_recv_rsp(rsp_pb)
         if ret_code != RET_OK:
-            print("QuoteHandler error: %s" % data)
+            logger.error("QuoteHandler error: %s", data)
             return RET_ERROR, data
         for quote in data.to_dict('records'):
-            print(
-                f"[QUOTE回调] {quote['code']} "
-                f"{quote.get('data_date', '')} {quote.get('data_time', '')} "
-                f"last={quote['last_price']} volume={quote.get('volume', 'N/A')}",
-                flush=True,
+            logger.info(
+                "[QUOTE回调] %s %s %s last=%s volume=%s",
+                quote['code'],
+                quote.get('data_date', ''),
+                quote.get('data_time', ''),
+                quote['last_price'],
+                quote.get('volume', 'N/A'),
             )
             self.strategy.on_quote(quote)
         return RET_OK, data
@@ -43,7 +46,7 @@ class RealtimeMaStrategyRunner:
     strategy_name = 'realtime_ma_cross'
     signal_class = None
 
-    def __init__(self, host='127.0.0.1', port=11111, run_id=None, db_path=None, **signal_kwargs):
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, run_id=None, db_path=None, **signal_kwargs):
         if self.signal_class is None:
             raise ValueError('signal_class 未定义')
 
@@ -57,6 +60,7 @@ class RealtimeMaStrategyRunner:
         self.quote_handler = QuoteHandler(self)
         self.run_id = run_id
         self.repository = RuntimeRepository(db_path=db_path) if run_id else None
+        self._last_runtime_state_signature = None
 
     @property
     def quote_ctx(self):
@@ -110,12 +114,15 @@ class RealtimeMaStrategyRunner:
 
     def on_bar(self, bar_data):
         result = self.signal.update_bar(bar_data)
-        print(
-            f"[K线] {result['code']} 时间: {result['time_key']} "
-            f"收盘价: {result['close']:.2f} | 数据量: {result['count']}"
+        logger.info(
+            "[K线] %s 时间: %s 收盘价: %.2f | 数据量: %s",
+            result['code'],
+            result['time_key'],
+            result['close'],
+            result['count'],
         )
 
-    def sync_runtime_state(self):
+    def sync_runtime_state(self, force=False):
         """将当前持仓和 pending 状态同步到数据库。"""
         if self.repository is None or self.run_id is None:
             return
@@ -129,18 +136,30 @@ class RealtimeMaStrategyRunner:
             if sell_qty:
                 pending_orders.append({'code': code, 'side': 'SELL', 'qty': sell_qty})
 
+        state_signature = json.dumps(
+            {
+                'positions': self.monitor.get_all_positions(),
+                'pending_orders': pending_orders,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if not force and state_signature == self._last_runtime_state_signature:
+            return
+
         self.repository.replace_positions(self.run_id, self.monitor.get_all_positions())
         self.repository.replace_pending_orders(self.run_id, pending_orders)
+        self._last_runtime_state_signature = state_signature
 
     def on_buy_signal(self, code, price, qty):
-        print(f"🟢 金叉信号！买入 {code} @ {price}")
+        logger.info("🟢 金叉信号！买入 %s @ %s", code, price)
         send_signal(code, 'BUY', price, qty, '均线金叉买入')
-        print(f"🟡 买入待确认: {code}，等待 agent 成交后登记持仓", flush=True)
+        logger.info("🟡 买入待确认: %s，等待 agent 成交后登记持仓", code)
 
     def on_sell_signal(self, code, price, qty):
-        print(f"🔴 死叉信号！卖出 {code} @ {price}")
+        logger.info("🔴 死叉信号！卖出 %s @ %s", code, price)
         send_signal(code, 'SELL', price, qty, '均线死叉卖出')
-        print(f"🟠 卖出待确认: {code}，等待 agent 成交后移除持仓", flush=True)
+        logger.info("🟠 卖出待确认: %s，等待 agent 成交后移除持仓", code)
 
     def on_quote(self, quote_data):
         code = quote_data['code']
@@ -150,10 +169,14 @@ class RealtimeMaStrategyRunner:
 
         result = self.signal.evaluate_quote(quote_data, position_qty=position_qty)
         if result is not None:
-            print(
-                f"[报价] {code} 实时价: {price:.2f} | "
-                f"短期MA({self.short_ma_period}): {result['short_ma']:.2f} | "
-                f"长期MA({self.long_ma_period}): {result['long_ma']:.2f}"
+            logger.info(
+                "[报价] %s 实时价: %.2f | 短期MA(%s): %.2f | 长期MA(%s): %.2f",
+                code,
+                price,
+                self.short_ma_period,
+                result['short_ma'],
+                self.long_ma_period,
+                result['long_ma'],
             )
             if result['action'] == 'BUY':
                 self.on_buy_signal(code, price, result['qty'])
@@ -197,13 +220,13 @@ class RealtimeMaStrategyRunner:
                 position_qty_after=pos_info.get('qty'),
                 avg_entry_after=pos_info.get('entry'),
             )
-        self.sync_runtime_state()
+        self.sync_runtime_state(force=True)
 
     def confirm_exit(self, code, qty=None, exit_price=None, reason='均线死叉卖出'):
         """卖出成交确认后移除持仓监控，并清理 pending SELL。"""
         pos_info = self.monitor.get_position_info(code)
         exit_qty = qty if qty is not None else (pos_info['qty'] if pos_info else None)
-        self.clear_pending_sell(code, qty)
+        self.clear_pending_sell(code, exit_qty)
         if self.repository is not None and self.run_id is not None:
             realized_pnl = None
             if pos_info is not None and exit_price is not None and exit_qty is not None:
@@ -221,7 +244,7 @@ class RealtimeMaStrategyRunner:
                 metadata={'position_entry': pos_info.get('entry') if pos_info else None},
             )
         self.monitor.remove_position(code)
-        self.sync_runtime_state()
+        self.sync_runtime_state(force=True)
 
     def process_control_commands(self):
         """
@@ -239,97 +262,105 @@ class RealtimeMaStrategyRunner:
 
         for command in commands:
             action = command.get('action')
-            if action == 'confirm_buy':
-                self.confirm_position(
-                    code=command['code'],
-                    qty=command['qty'],
-                    entry_price=command['entry_price'],
-                    stop_loss=command.get('stop_loss'),
-                    take_profit=command.get('take_profit'),
-                    reason=command.get('reason', '均线金叉买入'),
-                )
-                print(f"✅ 已处理成交确认(BUY): {command['code']} qty={command['qty']}", flush=True)
-            elif action == 'confirm_sell':
-                self.confirm_exit(
-                    code=command['code'],
-                    qty=command.get('qty'),
-                    exit_price=command.get('exit_price'),
-                    reason=command.get('reason', '均线死叉卖出'),
-                )
-                print(f"✅ 已处理成交确认(SELL): {command['code']}", flush=True)
-            else:
-                print(f"⚠️ 未知控制命令: {command}", flush=True)
-            self.repository.mark_command_processed(command['_command_id'])
+            try:
+                if action == 'confirm_buy':
+                    self.confirm_position(
+                        code=command['code'],
+                        qty=command['qty'],
+                        entry_price=command['entry_price'],
+                        stop_loss=command.get('stop_loss'),
+                        take_profit=command.get('take_profit'),
+                        reason=command.get('reason', '均线金叉买入'),
+                    )
+                    logger.info("✅ 已处理成交确认(BUY): %s qty=%s", command['code'], command['qty'])
+                elif action == 'confirm_sell':
+                    self.confirm_exit(
+                        code=command['code'],
+                        qty=command.get('qty'),
+                        exit_price=command.get('exit_price'),
+                        reason=command.get('reason', '均线死叉卖出'),
+                    )
+                    logger.info("✅ 已处理成交确认(SELL): %s", command['code'])
+                else:
+                    logger.warning("⚠️ 未知控制命令: %s", command)
+                self.repository.mark_command_processed(command['_command_id'])
+            except Exception as exc:
+                logger.exception("❌ 控制命令处理失败，保持 pending 状态: %s error=%s", command, exc)
 
     def start(self):
-        print("=" * 50, flush=True)
-        print(f"启动策略: {self.strategy_name}", flush=True)
-        print(f"代码: {', '.join(self.codes)}", flush=True)
-        print(f"短期均线周期: {self.short_ma_period}", flush=True)
-        print(f"长期均线周期: {self.long_ma_period}", flush=True)
-        print(f"单次下单数量: {self.order_qty}", flush=True)
-        print(f"止损比例: {STOP_LOSS_PCT:.1%}", flush=True)
-        print(f"止盈比例: {TAKE_PROFIT_PCT:.1%}", flush=True)
-        print("=" * 50, flush=True)
+        logger.info("=" * 50)
+        logger.info("启动策略: %s", self.strategy_name)
+        logger.info("代码: %s", ', '.join(self.codes))
+        logger.info("短期均线周期: %s", self.short_ma_period)
+        logger.info("长期均线周期: %s", self.long_ma_period)
+        logger.info("单次下单数量: %s", self.order_qty)
+        logger.info("止损比例: %.1f%%", STOP_LOSS_PCT * 100)
+        logger.info("止盈比例: %.1f%%", TAKE_PROFIT_PCT * 100)
+        logger.info("=" * 50)
         if self.repository is not None and self.run_id is not None:
             self.repository.update_run_status(self.run_id, 'running')
 
         ret = self.gateway.set_handler(self.quote_handler)
         if ret != RET_OK:
-            print("报价回调处理器设置失败", flush=True)
+            logger.error("报价回调处理器设置失败")
             return
 
-        print("正在订阅日K线...", flush=True)
+        logger.info("正在订阅日K线...")
         ret, data = self.gateway.subscribe_daily_bars(self.codes)
         if ret != RET_OK:
-            print(f"日K订阅失败: {data}", flush=True)
+            logger.error("日K订阅失败: %s", data)
             return
-        print("日K订阅成功", flush=True)
+        logger.info("日K订阅成功")
 
-        print("正在订阅实时报价...", flush=True)
+        logger.info("正在订阅实时报价...")
         ret, data = self.gateway.subscribe_quotes(self.codes)
         if ret != RET_OK:
-            print(f"报价订阅失败: {data}", flush=True)
+            logger.error("报价订阅失败: %s", data)
             return
-        print(f"订阅成功: {', '.join(self.codes)}", flush=True)
+        logger.info("订阅成功: %s", ', '.join(self.codes))
 
-        print("初始化历史K线数据...", flush=True)
+        logger.info("初始化历史K线数据...")
         for code in self.codes:
             ret, data = self.gateway.get_daily_bars(code, self.long_ma_period + 5)
             if ret == RET_OK:
                 for bar in data.to_dict('records'):
                     self.on_bar(bar)
                 short_ma, long_ma = self.signal.refresh_reference_ma(code)
-                print(
-                    f"  {code}: 获取到 {len(data)} 条K线 | "
-                    f"短期MA({self.short_ma_period}): {short_ma:.2f} | "
-                    f"长期MA({self.long_ma_period}): {long_ma:.2f}",
-                    flush=True,
+                logger.info(
+                    "  %s: 获取到 %s 条K线 | 短期MA(%s): %.2f | 长期MA(%s): %.2f",
+                    code,
+                    len(data),
+                    self.short_ma_period,
+                    short_ma,
+                    self.long_ma_period,
+                    long_ma,
                 )
             else:
-                print(f"  {code}: 获取失败 {data}", flush=True)
+                logger.error("  %s: 获取失败 %s", code, data)
 
-        print("\n=== 策略初始化完成，等待实时报价... ===", flush=True)
-        print(f"当前均线状态: 短期MA({self.short_ma_period}) vs 长期MA({self.long_ma_period})", flush=True)
+        logger.info("=== 策略初始化完成，等待实时报价... ===")
+        logger.info("当前均线状态: 短期MA(%s) vs 长期MA(%s)", self.short_ma_period, self.long_ma_period)
         for code in self.codes:
-            print(
-                f"  {code}: "
-                f"短期MA({self.short_ma_period})={self.last_short_ma[code]:.2f}, "
-                f"长期MA({self.long_ma_period})={self.last_long_ma[code]:.2f}",
-                flush=True,
+            logger.info(
+                "  %s: 短期MA(%s)=%.2f, 长期MA(%s)=%.2f",
+                code,
+                self.short_ma_period,
+                self.last_short_ma[code],
+                self.long_ma_period,
+                self.last_long_ma[code],
             )
-        print("按 Ctrl+C 停止", flush=True)
+        logger.info("按 Ctrl+C 停止")
 
         try:
             while True:
                 self.process_control_commands()
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("\n停止策略...", flush=True)
+            logger.info("停止策略...")
             self.stop()
 
     def stop(self):
         self.gateway.stop()
         if self.repository is not None and self.run_id is not None:
             self.repository.update_run_status(self.run_id, 'stopped', stopped_at=time.time())
-        print("策略已停止")
+        logger.info("策略已停止")

@@ -9,19 +9,22 @@
 """
 
 from datetime import datetime
-from pathlib import Path
+import threading
 from typing import Dict, Optional
 
+from backend.core.config import LOG_DIR, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from backend.core.logging import get_logger
 from backend.integrations.agent.signal_sender import send_agent_message
 
-LOG_DIR = Path(__file__).resolve().parents[1] / 'logs'
 LOG_FILE = LOG_DIR / 'monitor.log'
+logger = get_logger(__name__)
 
 
 class PositionMonitor:
     def __init__(self):
         self.positions: Dict[str, Dict] = {}
         self.sold_today: Dict[str, int] = {}
+        self._lock = threading.RLock()
 
     def add_position(
         self,
@@ -30,36 +33,37 @@ class PositionMonitor:
         entry_price: float,
         stop_loss: float,
         take_profit: float,
-        stop_loss_pct: float = -0.20,
-        take_profit_pct: float = 0.30,
+        stop_loss_pct: float = STOP_LOSS_PCT,
+        take_profit_pct: float = TAKE_PROFIT_PCT,
         reason: str = "",
     ):
         """登记已成交持仓；如果已有仓位则按加权均价合并。"""
-        existing = self.positions.get(code)
-        if existing is None:
-            total_qty = qty
-            avg_entry = entry_price
-            entry_time = datetime.now().isoformat()
-        else:
-            total_qty = existing['qty'] + qty
-            avg_entry = round(
-                (existing['entry'] * existing['qty'] + entry_price * qty) / total_qty,
-                4,
-            )
-            stop_loss = round(avg_entry * (1 + stop_loss_pct), 2)
-            take_profit = round(avg_entry * (1 + take_profit_pct), 2)
-            entry_time = existing.get('entry_time', datetime.now().isoformat())
+        with self._lock:
+            existing = self.positions.get(code)
+            if existing is None:
+                total_qty = qty
+                avg_entry = entry_price
+                entry_time = datetime.now().isoformat()
+            else:
+                total_qty = existing['qty'] + qty
+                avg_entry = round(
+                    (existing['entry'] * existing['qty'] + entry_price * qty) / total_qty,
+                    4,
+                )
+                stop_loss = round(avg_entry * (1 + stop_loss_pct), 2)
+                take_profit = round(avg_entry * (1 + take_profit_pct), 2)
+                entry_time = existing.get('entry_time', datetime.now().isoformat())
 
-        self.positions[code] = {
-            'qty': total_qty,
-            'entry': avg_entry,
-            'stop': stop_loss,
-            'profit': take_profit,
-            'stop_pct': stop_loss_pct,
-            'profit_pct': take_profit_pct,
-            'reason': reason,
-            'entry_time': entry_time,
-        }
+            self.positions[code] = {
+                'qty': total_qty,
+                'entry': avg_entry,
+                'stop': stop_loss,
+                'profit': take_profit,
+                'stop_pct': stop_loss_pct,
+                'profit_pct': take_profit_pct,
+                'reason': reason,
+                'entry_time': entry_time,
+            }
 
         self._log(
             f"➕ 添加持仓监控: {code} 新增数量:{qty} "
@@ -80,28 +84,35 @@ class PositionMonitor:
 
     def remove_position(self, code: str):
         """移除持仓监控（手动平仓时调用）。"""
-        if code in self.positions:
-            self.positions.pop(code)
+        existed = False
+        with self._lock:
+            existed = code in self.positions
+            if existed:
+                self.positions.pop(code)
+        if existed:
             self._log(f"➖ 移除持仓监控: {code}")
             send_agent_message(f"📤 【持仓移除】{code} 已平仓", log_prefix='持仓通知')
 
     def on_tick(self, code: str, current_price: float) -> Optional[str]:
         """检查当前价格是否触发止损/止盈。"""
-        if code not in self.positions:
-            return None
+        with self._lock:
+            pos = self.positions.get(code)
+            if pos is None:
+                return None
+            qty = pos['qty']
 
-        pos = self.positions[code]
-        qty = pos['qty']
+            if current_price <= pos['stop']:
+                self.positions.pop(code, None)
+                trigger = 'STOP_LOSS'
+            elif current_price >= pos['profit']:
+                self.positions.pop(code, None)
+                trigger = 'TAKE_PROFIT'
+            else:
+                trigger = None
 
-        if current_price <= pos['stop']:
-            self._emit_sell(code, 'STOP_LOSS', current_price, qty, pos)
-            self.positions.pop(code)
-            return 'STOP_LOSS'
-
-        if current_price >= pos['profit']:
-            self._emit_sell(code, 'TAKE_PROFIT', current_price, qty, pos)
-            self.positions.pop(code)
-            return 'TAKE_PROFIT'
+        if trigger is not None:
+            self._emit_sell(code, trigger, current_price, qty, pos)
+            return trigger
 
         return None
 
@@ -110,18 +121,23 @@ class PositionMonitor:
         return self.on_tick(code, close_price)
 
     def get_position_info(self, code: str) -> Optional[Dict]:
-        return self.positions.get(code)
+        with self._lock:
+            pos = self.positions.get(code)
+            return dict(pos) if pos is not None else None
 
     def get_all_positions(self) -> Dict[str, Dict]:
-        return self.positions.copy()
+        with self._lock:
+            return {code: dict(pos) for code, pos in self.positions.items()}
 
     def get_position_count(self) -> int:
-        return len(self.positions)
+        with self._lock:
+            return len(self.positions)
 
     def can_buy(self, code: str, max_position_per_stock: int = 5000) -> bool:
-        if code in self.positions:
-            return self.positions[code]['qty'] < max_position_per_stock
-        return True
+        with self._lock:
+            if code in self.positions:
+                return self.positions[code]['qty'] < max_position_per_stock
+            return True
 
     def _emit_sell(self, code: str, reason: str, price: float, qty: int, pos: Dict):
         reason_cn = '止损' if reason == 'STOP_LOSS' else '止盈'
@@ -143,6 +159,6 @@ class PositionMonitor:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_line = f"[{timestamp}] {message}\n"
-        print(log_line.strip(), flush=True)
+        logger.info(message)
         with LOG_FILE.open('a') as file:
             file.write(log_line)

@@ -3,6 +3,8 @@
 回测账户与仓位模型。
 """
 
+from backend.core.config import STOP_LOSS_PCT, TAKE_PROFIT_PCT
+
 
 class BacktestPortfolio:
     def __init__(self, initial_cash=100000.0, commission_rate=0.001, slippage=0.0):
@@ -30,8 +32,8 @@ class BacktestPortfolio:
         qty,
         price,
         time_key,
-        stop_loss_pct=-0.03,
-        take_profit_pct=0.05,
+        stop_loss_pct=STOP_LOSS_PCT,
+        take_profit_pct=TAKE_PROFIT_PCT,
         reason='均线金叉买入',
     ):
         fill_price = price + self.slippage

@@ -12,14 +12,12 @@ import argparse
 import json
 import subprocess
 from datetime import datetime
-from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-LOG_DIR = BACKEND_DIR / 'logs'
+from backend.core.config import AGENT_TEST_MODE, LOG_DIR
+from backend.core.logging import get_logger
+
 SIGNAL_LOG_FILE = LOG_DIR / 'signals.log'
-
-# 测试模式：设置为 True 时跳过 openclaw 调用
-TEST_MODE = True
+logger = get_logger(__name__)
 
 
 def ensure_log_dir():
@@ -45,9 +43,9 @@ def log_signal(code, action, price, quantity, note=''):
 def send_agent_message(message, *, log_prefix='消息'):
     """向 openclaw agent 发送原始文本消息。"""
     ensure_log_dir()
-    print(f"发送{log_prefix}: {message}")
-    if TEST_MODE:
-        print(f"[TEST MODE] 跳过 openclaw 调用，内容: {message}")
+    logger.info("发送%s: %s", log_prefix, message)
+    if AGENT_TEST_MODE:
+        logger.info("[TEST MODE] 跳过 openclaw 调用，内容: %s", message)
         return
 
     subprocess.run(
@@ -73,7 +71,7 @@ def send_signal(code, action, price, quantity, note=''):
 
     send_agent_message(message, log_prefix='信号')
     log_signal(code, action, price, quantity, note)
-    print("信号已发送！")
+    logger.info("信号已发送！")
 
 
 def main():

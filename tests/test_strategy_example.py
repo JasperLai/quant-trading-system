@@ -273,6 +273,32 @@ class StrategyTest(unittest.TestCase):
             self.assertEqual('SELL', executions[1]['side'])
             self.assertEqual(21.5, executions[1]['price'])
 
+    def test_process_control_commands_keeps_failed_command_pending(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            repository.upsert_run(
+                run_id='run-fail',
+                strategy_name='single_position_ma',
+                config={},
+                pid=1234,
+                status='running',
+            )
+            repository.enqueue_command('run-fail', 'confirm_buy', {'action': 'confirm_buy', 'code': 'HK.00700', 'qty': 100})
+            strategy = self.single_module.MaCrossStrategy(
+                codes=['HK.00700'],
+                short_ma=5,
+                long_ma=20,
+                run_id='run-fail',
+                db_path=str(db_path),
+            )
+
+            strategy.process_control_commands()
+
+            pending = repository.fetch_pending_commands('run-fail')
+            self.assertEqual(1, len(pending))
+            self.assertEqual('HK.00700', pending[0]['code'])
+
     def test_pyramiding_strategy_respects_max_position(self):
         strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
             codes=['HK.00700'],
@@ -364,6 +390,54 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual('TAKE_PROFIT', result['trades'][1]['reason'])
         self.assertEqual({}, result['open_positions'])
         self.assertGreater(result['summary']['final_equity'], result['summary']['initial_cash'])
+
+    def test_backtest_engine_does_not_clear_pending_sell_when_no_position_closed(self):
+        class StubSignal:
+            strategy_name = 'stub'
+
+            def __init__(self):
+                self.pending_sell_cleared = False
+
+            def update_bar(self, event):
+                return event
+
+            def evaluate_quote(self, quote_data, position_qty=0):
+                return {'action': 'SELL', 'qty': 100, 'reason': 'stub sell'}
+
+            def clear_pending_sell(self, code, qty=None):
+                self.pending_sell_cleared = True
+
+            def clear_pending_buy(self, code, qty=None):
+                return None
+
+        signal = StubSignal()
+        engine = self.backtest_engine_module.BacktestEngine(
+            signal=signal,
+            initial_cash=100000.0,
+            commission_rate=0.0,
+            slippage=0.0,
+        )
+        result = engine.run({'SZ.000001': [{'code': 'SZ.000001', 'time_key': '2026-01-01 00:00:00', 'close': 10.0}]})
+
+        self.assertFalse(signal.pending_sell_cleared)
+        self.assertEqual([], result['trades'])
+
+    def test_sync_runtime_state_skips_duplicate_writes(self):
+        strategy = self.single_module.MaCrossStrategy(
+            codes=['HK.00700'],
+            short_ma=5,
+            long_ma=20,
+            run_id='run-sync',
+            db_path=str(ROOT / 'backend' / 'data' / 'test-runtime.sqlite3'),
+        )
+        strategy.repository.replace_positions = mock.Mock()
+        strategy.repository.replace_pending_orders = mock.Mock()
+
+        strategy.sync_runtime_state()
+        strategy.sync_runtime_state()
+
+        self.assertEqual(1, strategy.repository.replace_positions.call_count)
+        self.assertEqual(1, strategy.repository.replace_pending_orders.call_count)
 
     def test_backtest_engine_can_exit_on_dead_cross(self):
         signal = self.signal_module.SinglePositionMaSignal(codes=['SZ.000001'], short_ma=2, long_ma=3, order_qty=100)

@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from backend.core.config import LOG_DIR, RUNTIME_DB_PATH
+from backend.core.logging import get_logger
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,10 +19,9 @@ from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
 
 ROOT = Path(__file__).resolve().parents[2]
-BACKEND_DIR = ROOT / 'backend'
-LOG_DIR = BACKEND_DIR / 'logs'
-DB_PATH = BACKEND_DIR / 'data' / 'runtime.sqlite3'
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = RUNTIME_DB_PATH
+logger = get_logger(__name__)
 
 
 class StartStrategyRequest(BaseModel):
@@ -157,12 +158,15 @@ class StrategyRuntime:
             created_at=run.created_at,
             log_path=str(log_path),
         )
+        logger.info("启动策略实例: run_id=%s strategy=%s pid=%s", run_id, request.strategy_name, process.pid)
         return run.to_dict()
 
     def list_runs(self):
         runs = self.repository.list_runs()
+        with self.lock:
+            active_runs = dict(self.runs)
         for run in runs:
-            process = self.runs.get(run['id'])
+            process = active_runs.get(run['id'])
             if process is not None and process.process.poll() is None:
                 run['pid'] = process.process.pid
                 run['status'] = 'running'
@@ -195,6 +199,7 @@ class StrategyRuntime:
             run.process.wait(timeout=5)
         run.stopped_at = time.time()
         self.repository.update_run_status(run_id, 'stopped', stopped_at=run.stopped_at)
+        logger.info("停止策略实例: run_id=%s", run_id)
         return run.to_dict()
 
     def _append_command(self, run_id: str, action: str, payload: Dict):
@@ -208,6 +213,7 @@ class StrategyRuntime:
         if run.process.poll() is not None:
             raise HTTPException(status_code=409, detail='Run is not active')
         self.repository.enqueue_command(run_id, action, payload)
+        logger.info("写入运行命令: run_id=%s action=%s", run_id, action)
         return {'status': 'queued', 'runId': run_id, 'command': payload}
 
     def confirm_buy(self, run_id: str, request: ConfirmBuyRequest):
@@ -271,7 +277,7 @@ def list_runs():
 
 @app.get('/api/runs/{run_id}/state')
 def get_run_state(run_id: str):
-    return runtime.get_run_state(run_id)
+        return runtime.get_run_state(run_id)
 
 
 @app.post('/api/runs')

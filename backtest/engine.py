@@ -3,6 +3,7 @@
 日线回测引擎。
 """
 
+from backend.core.config import STOP_LOSS_PCT, TAKE_PROFIT_PCT
 from backtest.portfolio import BacktestPortfolio
 from backtest.report import build_backtest_report
 
@@ -14,8 +15,8 @@ class BacktestEngine:
         initial_cash=100000.0,
         commission_rate=0.001,
         slippage=0.0,
-        stop_loss_pct=-0.20,
-        take_profit_pct=0.30,
+        stop_loss_pct=STOP_LOSS_PCT,
+        take_profit_pct=TAKE_PROFIT_PCT,
     ):
         self.signal = signal
         self.portfolio = BacktestPortfolio(
@@ -62,12 +63,11 @@ class BacktestEngine:
                     take_profit_pct=self.take_profit_pct,
                     reason=decision['reason'],
                 )
-                self.signal.clear_pending_buy(code, decision['qty'])
+                if bought:
+                    self.signal.clear_pending_buy(code, decision['qty'])
             elif decision and decision['action'] == 'SELL':
                 sold = self.portfolio.sell(code, close_price, time_key, decision['reason'])
                 if sold is not None:
-                    self.signal.clear_pending_sell(code, decision['qty'])
-                else:
                     self.signal.clear_pending_sell(code, decision['qty'])
 
             self.portfolio.evaluate_risk(code, close_price, time_key)
