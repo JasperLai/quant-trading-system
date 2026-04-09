@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """FastAPI service for strategy management."""
 
+import os
 import signal
 import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+from backtest.replay_validation import run_replay_validation
 from backend.core.config import LOG_DIR, RUNTIME_DB_PATH
 from backend.core.logging import get_logger
 from fastapi import FastAPI, HTTPException
@@ -30,6 +32,7 @@ class StartStrategyRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     strategy_name: str = Field(..., alias='strategyName')
+    strategy_params: Dict[str, Any] = Field(default_factory=dict, alias='strategyParams')
     codes: Optional[List[str]] = None
     short_ma: Optional[int] = Field(None, alias='shortMa')
     long_ma: Optional[int] = Field(None, alias='longMa')
@@ -84,6 +87,24 @@ class ConfirmSellRequest(BaseModel):
     reason: Optional[str] = '均线死叉卖出'
 
 
+class BacktestValidationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    strategy_name: str = Field('pyramiding_ma', alias='strategyName')
+    strategy_params: Dict[str, Any] = Field(default_factory=dict, alias='strategyParams')
+    codes: List[str] = Field(default_factory=lambda: ['HK.03690'])
+    start: str
+    end: str
+    short_ma: int = Field(5, alias='shortMa')
+    long_ma: int = Field(10, alias='longMa')
+    order_qty: int = Field(100, alias='orderQty')
+    max_position_per_stock: int = Field(300, alias='maxPositionPerStock')
+    initial_cash: float = Field(100000.0, alias='initialCash')
+    commission_rate: float = Field(0.001, alias='commissionRate')
+    slippage: float = 0.0
+    no_cache: bool = Field(False, alias='noCache')
+
+
 class StrategyRuntime:
     def __init__(self):
         self.manager = StrategyManager()
@@ -94,6 +115,17 @@ class StrategyRuntime:
 
     def list_strategies(self):
         return self.manager.list_strategy_definitions()
+
+    def _resolve_strategy_params(self, strategy_name: str, overrides: Optional[Dict[str, Any]] = None):
+        params = dict(STRATEGY_METADATA[strategy_name].get('params', {}))
+        for key, value in (overrides or {}).items():
+            if value is None:
+                continue
+            if key == 'codes' and isinstance(value, str):
+                params[key] = [item.strip() for item in value.split(',') if item.strip()]
+            else:
+                params[key] = value
+        return params
 
     def _build_command(self, config: Dict) -> List[str]:
         cmd = ['python3', '-m', 'backend.cli.run_strategy', '--strategy', config['strategy']]
@@ -113,22 +145,54 @@ class StrategyRuntime:
             cmd.extend(['--db-path', config['db_path']])
         return cmd
 
+    def _pid_is_alive(self, pid: Optional[int]) -> bool:
+        if not pid or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        else:
+            return True
+
+    def reconcile_running_runs(self):
+        with self.lock:
+            active_runs = dict(self.runs)
+
+        for run in self.repository.list_runs():
+            if run['status'] != 'running':
+                continue
+
+            in_memory_run = active_runs.get(run['id'])
+            if in_memory_run is not None:
+                if in_memory_run.process.poll() is None:
+                    continue
+                stopped_at = in_memory_run.stopped_at or time.time()
+                self.repository.update_run_status(run['id'], 'stopped', stopped_at=stopped_at)
+                continue
+
+            if not self._pid_is_alive(run.get('pid')):
+                self.repository.update_run_status(run['id'], 'stopped', stopped_at=time.time())
+                logger.info("启动对账修正实例状态: run_id=%s pid=%s -> stopped", run['id'], run.get('pid'))
+
     def start_strategy(self, request: StartStrategyRequest):
         if request.strategy_name not in STRATEGY_METADATA:
             raise HTTPException(status_code=404, detail='Strategy not found')
 
-        config = {
-            'strategy': request.strategy_name,
-            'codes': request.codes or STRATEGY_METADATA[request.strategy_name]['params'].get('codes'),
-            'short_ma': request.short_ma if request.short_ma is not None else STRATEGY_METADATA[request.strategy_name]['params'].get('short_ma'),
-            'long_ma': request.long_ma if request.long_ma is not None else STRATEGY_METADATA[request.strategy_name]['params'].get('long_ma'),
-            'order_qty': request.order_qty if request.order_qty is not None else STRATEGY_METADATA[request.strategy_name]['params'].get('order_qty'),
-            'max_position_per_stock': (
-                request.max_position_per_stock
-                if request.max_position_per_stock is not None
-                else STRATEGY_METADATA[request.strategy_name]['params'].get('max_position_per_stock')
-            ),
-        }
+        config = self._resolve_strategy_params(
+            request.strategy_name,
+            {
+                **request.strategy_params,
+                'codes': request.codes,
+                'short_ma': request.short_ma,
+                'long_ma': request.long_ma,
+                'order_qty': request.order_qty,
+                'max_position_per_stock': request.max_position_per_stock,
+            },
+        )
+        config['strategy'] = request.strategy_name
 
         run_id = uuid.uuid4().hex[:8]
         log_path = LOG_DIR / f'{run_id}.log'
@@ -165,6 +229,7 @@ class StrategyRuntime:
         return run.to_dict()
 
     def list_runs(self):
+        self.reconcile_running_runs()
         runs = self.repository.list_runs()
         with self.lock:
             active_runs = dict(self.runs)
@@ -191,21 +256,45 @@ class StrategyRuntime:
     def stop_run(self, run_id: str):
         with self.lock:
             run = self.runs.get(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail='Run not found')
-        if run.process.poll() is not None:
+        if run is not None:
+            if run.process.poll() is not None:
+                return run.to_dict()
+
+            run.process.send_signal(signal.SIGINT)
+            try:
+                run.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                run.process.terminate()
+                run.process.wait(timeout=5)
+            run.stopped_at = time.time()
+            self.repository.update_run_status(run_id, 'stopped', stopped_at=run.stopped_at)
+            logger.info("停止策略实例: run_id=%s", run_id)
             return run.to_dict()
 
-        run.process.send_signal(signal.SIGINT)
+        db_run = self.repository.get_run(run_id)
+        if db_run is None:
+            raise HTTPException(status_code=404, detail='Run not found')
+
+        pid = db_run.get('pid')
+        if not pid:
+            raise HTTPException(status_code=409, detail='Run has no active pid')
+
         try:
-            run.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            run.process.terminate()
-            run.process.wait(timeout=5)
-        run.stopped_at = time.time()
-        self.repository.update_run_status(run_id, 'stopped', stopped_at=run.stopped_at)
-        logger.info("停止策略实例: run_id=%s", run_id)
-        return run.to_dict()
+            os.kill(pid, signal.SIGINT)
+        except ProcessLookupError:
+            stopped_at = time.time()
+            self.repository.update_run_status(run_id, 'stopped', stopped_at=stopped_at)
+            logger.warning("停止策略时发现进程已不存在: run_id=%s pid=%s", run_id, pid)
+            updated = self.repository.get_run(run_id)
+            return updated or db_run
+        except PermissionError as exc:
+            raise HTTPException(status_code=500, detail=f'Unable to stop process: {exc}') from exc
+
+        stopped_at = time.time()
+        self.repository.update_run_status(run_id, 'stopped', stopped_at=stopped_at)
+        logger.info("按数据库 PID 停止策略实例: run_id=%s pid=%s", run_id, pid)
+        updated = self.repository.get_run(run_id)
+        return updated or db_run
 
     def confirm_buy(self, run_id: str, request: ConfirmBuyRequest):
         db_run = self.repository.get_run(run_id)
@@ -248,14 +337,65 @@ class StrategyRuntime:
         logger.info("确认账户级卖出并落库: account_id=%s code=%s qty=%s", account_id, request.code, request.qty)
         return {'status': 'applied', 'accountId': account_id, **result}
 
+    def run_backtest_validation(self, request: BacktestValidationRequest):
+        if request.strategy_name not in STRATEGY_METADATA:
+            raise HTTPException(status_code=404, detail='Strategy not found')
+
+        strategy_params = self._resolve_strategy_params(
+            request.strategy_name,
+            {
+                **request.strategy_params,
+                'codes': request.codes,
+                'short_ma': request.short_ma,
+                'long_ma': request.long_ma,
+                'order_qty': request.order_qty,
+                'max_position_per_stock': request.max_position_per_stock,
+            },
+        )
+
+        class Args:
+            pass
+
+        args = Args()
+        args.strategy = request.strategy_name
+        args.codes = strategy_params.get('codes', request.codes)
+        args.start = request.start
+        args.end = request.end
+        args.short_ma = strategy_params.get('short_ma', request.short_ma)
+        args.long_ma = strategy_params.get('long_ma', request.long_ma)
+        args.order_qty = strategy_params.get('order_qty', request.order_qty)
+        args.max_position_per_stock = strategy_params.get('max_position_per_stock', request.max_position_per_stock)
+        args.initial_cash = request.initial_cash
+        args.commission_rate = request.commission_rate
+        args.slippage = request.slippage
+        args.no_cache = request.no_cache
+        args.report_file = None
+        logger.info(
+            "执行回测验证: strategy=%s code=%s start=%s end=%s",
+            args.strategy,
+            ','.join(args.codes),
+            args.start,
+            args.end,
+        )
+        return run_replay_validation(args)
+
     def read_logs(self, run_id: str, lines: int = 200):
         with self.lock:
             run = self.runs.get(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail='Run not found')
-        if not run.log_path.exists():
+        if run is not None:
+            log_path = run.log_path
+        else:
+            db_run = self.repository.get_run(run_id)
+            if db_run is None:
+                raise HTTPException(status_code=404, detail='Run not found')
+            raw_log_path = db_run.get('logPath')
+            if not raw_log_path:
+                return []
+            log_path = Path(raw_log_path)
+
+        if not log_path.exists():
             return []
-        content = run.log_path.read_text().splitlines()
+        content = log_path.read_text().splitlines()
         return content[-lines:]
 
 
@@ -272,6 +412,7 @@ app.add_middleware(
 
 @app.on_event('startup')
 def startup_guardian():
+    runtime.reconcile_running_runs()
     app.state.guardian = PositionGuardian(runtime.repository)
     app.state.guardian.start()
 
@@ -286,6 +427,35 @@ def shutdown_guardian():
 @app.get('/api/health')
 def health():
     return {'status': 'ok'}
+
+
+@app.get('/api/system/status')
+def system_status():
+    guardian = getattr(app.state, 'guardian', None)
+    guardian_status = guardian.get_status() if guardian is not None else {
+        'running': False,
+        'threadAlive': False,
+        'openDConnected': False,
+        'quoteLogin': False,
+        'detail': 'guardian_unavailable',
+        'subscribedCodes': [],
+        'positionCount': 0,
+        'lastError': 'guardian_unavailable',
+        'startedAt': None,
+        'host': None,
+        'port': None,
+    }
+    return {
+        'status': 'ok',
+        'openD': {
+            'connected': guardian_status['openDConnected'],
+            'quoteLogin': guardian_status['quoteLogin'],
+            'detail': guardian_status['detail'],
+            'host': guardian_status['host'],
+            'port': guardian_status['port'],
+        },
+        'guardian': guardian_status,
+    }
 
 
 @app.get('/api/strategies')
@@ -331,3 +501,8 @@ def confirm_sell(run_id: str, request: ConfirmSellRequest):
 @app.post('/api/accounts/{account_id}/confirm-sell')
 def confirm_account_sell(account_id: str, request: ConfirmSellRequest):
     return runtime.confirm_account_sell(account_id, request)
+
+
+@app.post('/api/backtests/replay-validation')
+def run_backtest_validation(request: BacktestValidationRequest):
+    return runtime.run_backtest_validation(request)

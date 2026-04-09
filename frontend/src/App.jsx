@@ -1,13 +1,56 @@
-import { DesktopOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { useEffect, useState } from 'react';
+import { DesktopOutlined, LineChartOutlined } from '@ant-design/icons';
 import { ConfigProvider, Layout, Menu, Tag, Typography } from 'antd';
 import { Link, Route, Routes, useLocation } from 'react-router-dom';
-import StrategyCatalogPage from './StrategyCatalogPage';
+import { api } from './api';
+import BacktestPage from './BacktestPage';
 import StrategyRunsPage from './StrategyRunsPage';
 
 const { Header, Sider, Content } = Layout;
 
 export default function App() {
   const location = useLocation();
+  const [systemStatus, setSystemStatus] = useState({
+    openD: { connected: false, quoteLogin: false, detail: 'loading' },
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadStatus() {
+      try {
+        const data = await api.getSystemStatus();
+        if (!cancelled) {
+          setSystemStatus(data);
+        }
+      } catch (_) {
+        if (!cancelled) {
+          setSystemStatus({
+            openD: { connected: false, quoteLogin: false, detail: 'unreachable' },
+          });
+        }
+      }
+    }
+
+    loadStatus();
+    const timer = window.setInterval(loadStatus, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const openDConnected = systemStatus?.openD?.connected && systemStatus?.openD?.quoteLogin;
+  const openDColor = openDConnected
+    ? 'success'
+    : systemStatus?.openD?.connected
+      ? 'warning'
+      : 'error';
+  const openDLabel = openDConnected
+    ? 'OpenD 已连接'
+    : systemStatus?.openD?.connected
+      ? 'OpenD 已连接，行情未登录'
+      : 'OpenD 未连接';
 
   return (
     <ConfigProvider
@@ -69,9 +112,9 @@ export default function App() {
                 label: <Link to="/strategies">策略管理</Link>,
               },
               {
-                key: '/runs',
-                icon: <PlayCircleOutlined />,
-                label: <Link to="/runs">启动停止</Link>,
+                key: '/backtests',
+                icon: <LineChartOutlined />,
+                label: <Link to="/backtests">回测验证</Link>,
               },
             ]}
           />
@@ -84,15 +127,16 @@ export default function App() {
                 Python 策略服务管理
               </Typography.Title>
             </div>
-            <Tag className="header-tag" color="gold">
-              OpenD Connected UI
+            <Tag className="header-tag" color={openDColor}>
+              {openDLabel}
             </Tag>
           </Header>
           <Content className="content">
             <Routes>
-              <Route path="/" element={<StrategyCatalogPage />} />
-              <Route path="/strategies" element={<StrategyCatalogPage />} />
+              <Route path="/" element={<StrategyRunsPage />} />
+              <Route path="/strategies" element={<StrategyRunsPage />} />
               <Route path="/runs" element={<StrategyRunsPage />} />
+              <Route path="/backtests" element={<BacktestPage />} />
             </Routes>
           </Content>
         </Layout>

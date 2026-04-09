@@ -42,6 +42,8 @@ class PositionGuardian:
         self._pending_sell_codes = set()
         self._subscribed_codes = set()
         self._active_alerts = set()
+        self._last_error = None
+        self._started_at = None
         self.host = host
         self.port = port
 
@@ -49,6 +51,8 @@ class PositionGuardian:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
+        self._started_at = time.time()
+        self._last_error = None
         self._thread = threading.Thread(target=self._run, name='position-guardian', daemon=True)
         self._thread.start()
 
@@ -68,6 +72,42 @@ class PositionGuardian:
         if ret != RET_OK:
             raise RuntimeError('guardian quote handler setup failed')
         logger.info("PositionGuardian started and connected to OpenD")
+
+    def get_status(self):
+        thread_alive = self._thread is not None and self._thread.is_alive()
+        status = {
+            'running': thread_alive and not self._stop_event.is_set(),
+            'threadAlive': thread_alive,
+            'host': self.host,
+            'port': self.port,
+            'startedAt': self._started_at,
+            'subscribedCodes': sorted(self._subscribed_codes),
+            'positionCount': sum(len(items) for items in self._positions_by_code.values()),
+            'lastError': self._last_error,
+            'openDConnected': False,
+            'quoteLogin': False,
+            'detail': 'guardian_not_started',
+        }
+
+        if self.gateway is None:
+            return status
+
+        try:
+            ret, data = self.gateway.get_global_state()
+            if ret == RET_OK and data:
+                quote_login = bool(data.get('qot_logined'))
+                status.update(
+                    {
+                        'openDConnected': True,
+                        'quoteLogin': quote_login,
+                        'detail': 'connected' if quote_login else 'connected_but_quote_not_logged_in',
+                    }
+                )
+            else:
+                status['detail'] = f'get_global_state_failed:{data}'
+        except Exception as exc:
+            status['detail'] = f'openD_check_failed:{exc}'
+        return status
 
     def _refresh_positions(self):
         positions = self.repository.list_all_account_positions()
@@ -142,6 +182,7 @@ class PositionGuardian:
         try:
             self._ensure_gateway()
         except Exception as exc:
+            self._last_error = str(exc)
             logger.exception("PositionGuardian failed to initialize: %s", exc)
             return
 
@@ -149,6 +190,7 @@ class PositionGuardian:
             try:
                 self._refresh_positions()
             except Exception as exc:
+                self._last_error = str(exc)
                 logger.exception("PositionGuardian refresh failed: %s", exc)
             self._stop_event.wait(self.refresh_interval)
 

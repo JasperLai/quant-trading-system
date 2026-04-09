@@ -145,9 +145,9 @@ export default function StrategyRunsPage() {
     <div className="page-shell">
       <Card className="hero-card hero-card-yellow" bordered={false}>
         <Typography.Text className="hero-kicker">RUN CONTROL</Typography.Text>
-        <Typography.Title level={2}>启动停止页</Typography.Title>
+        <Typography.Title level={2}>策略管理页</Typography.Title>
         <Typography.Paragraph className="hero-text">
-          选择策略、调整参数、启动实例，并随时查看运行日志。右侧表格会自动轮询，方便你观察每个实例的状态变化。
+          在这里选择策略、调整参数、启动实例，并随时查看运行状态与日志。右侧表格会自动轮询，方便你管理当前策略实例。
         </Typography.Paragraph>
         <Row gutter={16}>
           <Col span={8}>
@@ -163,7 +163,7 @@ export default function StrategyRunsPage() {
       </Card>
       <Row gutter={[16, 16]}>
         <Col span={10}>
-          <Card className="control-card" title="启动策略">
+          <Card className="control-card" title="新建并启动策略">
             <Form layout="vertical" form={form} onFinish={handleStart}>
               <Form.Item name="strategyName" label="策略" rules={[{ required: true }]}>
                 <Select
@@ -198,7 +198,7 @@ export default function StrategyRunsPage() {
           </Card>
         </Col>
         <Col span={14}>
-          <Card className="control-card" title="运行中的策略">
+          <Card className="control-card" title="策略实例列表">
             <Table rowKey="id" dataSource={runs} columns={columns} pagination={false} />
           </Card>
         </Col>

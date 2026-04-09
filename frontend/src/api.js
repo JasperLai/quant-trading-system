@@ -15,8 +15,14 @@ export async function fetchJson(url, options) {
 }
 
 export const api = {
+  getSystemStatus: () => fetchJson('/api/system/status'),
   listStrategies: () => fetchJson('/api/strategies'),
   listRuns: () => fetchJson('/api/runs'),
+  runBacktestValidation: (payload) =>
+    fetchJson('/api/backtests/replay-validation', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   startRun: (payload) =>
     fetchJson('/api/runs', {
       method: 'POST',

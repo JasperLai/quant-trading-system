@@ -34,6 +34,36 @@ STRATEGY_METADATA = {
             'long_ma': 20,
             'order_qty': 100,
         },
+        'param_fields': [
+            {
+                'name': 'codes',
+                'label': '标的列表',
+                'type': 'codes',
+                'required': True,
+                'placeholder': 'SZ.000001,HK.03690',
+            },
+            {
+                'name': 'short_ma',
+                'label': '短期均线',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+            {
+                'name': 'long_ma',
+                'label': '长期均线',
+                'type': 'number',
+                'required': True,
+                'min': 2,
+            },
+            {
+                'name': 'order_qty',
+                'label': '单次下单数量',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+        ],
     },
     'pyramiding_ma': {
         'name': 'pyramiding_ma',
@@ -46,6 +76,43 @@ STRATEGY_METADATA = {
             'order_qty': 100,
             'max_position_per_stock': 300,
         },
+        'param_fields': [
+            {
+                'name': 'codes',
+                'label': '标的列表',
+                'type': 'codes',
+                'required': True,
+                'placeholder': 'SZ.000001,HK.03690',
+            },
+            {
+                'name': 'short_ma',
+                'label': '短期均线',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+            {
+                'name': 'long_ma',
+                'label': '长期均线',
+                'type': 'number',
+                'required': True,
+                'min': 2,
+            },
+            {
+                'name': 'order_qty',
+                'label': '单次下单数量',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+            {
+                'name': 'max_position_per_stock',
+                'label': '单标的最大仓位',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+        ],
     },
 }
 

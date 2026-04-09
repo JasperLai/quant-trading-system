@@ -135,6 +135,10 @@ body {
   background: linear-gradient(135deg, #fff4db 0%, #fff0f6 55%, #eef9ff 100%) !important;
 }
 
+.hero-card-mint {
+  background: linear-gradient(135deg, #ecfff6 0%, #eefcff 55%, #fff8e8 100%) !important;
+}
+
 .hero-kicker {
   display: inline-block;
   margin-bottom: 12px;
@@ -152,6 +156,15 @@ body {
 .strategy-card,
 .control-card {
   border: 1px solid rgba(124, 92, 255, 0.12) !important;
+}
+
+.control-card .ant-card-extra {
+  position: relative;
+  z-index: 1;
+}
+
+.backtest-tabs .ant-tabs-nav {
+  margin-bottom: 0;
 }
 
 .strategy-card-sky {
@@ -185,6 +198,59 @@ body {
   background: linear-gradient(180deg, #1f1f3d 0%, #182848 100%);
   color: #eef4ff;
   border-radius: 18px;
+}
+
+.chart-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.chart-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.kline-chart {
+  width: 100%;
+  height: auto;
+  border-radius: 28px;
+  box-shadow: inset 0 0 0 1px rgba(124, 92, 255, 0.08);
+}
+
+.chart-axis-label {
+  fill: #7d8699;
+  font-size: 11px;
+}
+
+.chart-marker-label {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.open-positions-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.open-position-pill {
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fff8df 0%, #fffdf4 100%);
+  border: 1px solid rgba(250, 173, 20, 0.28);
+}
+
+.open-position-code {
+  font-weight: 700;
+  color: #8d5d00;
+  margin-bottom: 4px;
+}
+
+.open-position-meta {
+  color: #6e5b2d;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 @media (max-width: 960px) {
