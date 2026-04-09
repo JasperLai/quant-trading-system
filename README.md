@@ -5,7 +5,7 @@
 当前实现不是“策略直接下单”，而是这条链路：
 
 ```text
-OpenD 行情 -> Python 策略子进程 -> agent 信号 -> agent 执行下单 -> 成交确认 API -> SQLite 状态同步
+OpenD 行情 -> Python 策略子进程 -> agent 信号 -> agent 执行下单 -> 成交确认 API -> PositionService -> SQLite 状态同步
 ```
 
 系统支持两类运行形态：
@@ -25,11 +25,12 @@ OpenD 行情 -> Python 策略子进程 -> agent 信号 -> agent 执行下单 -> 
 - `PositionMonitor` 只做固定兜底风控：
   - `-20%` 止损
   - `+30%` 止盈
+- `PositionGuardian` 在主进程中持续监控账户级持仓，策略停止后仍可继续兜底风控。
 - FastAPI 提供策略启动、停止、日志、成交确认、状态查询接口。
 - SQLite 持久化：
   - 运行实例
-  - 待处理命令
-  - 当前持仓
+  - 策略归属持仓
+  - 账户级聚合持仓
   - 待确认订单
   - 成交历史
 - 前端提供 Ant Design 管理页。
@@ -40,21 +41,24 @@ OpenD 行情 -> Python 策略子进程 -> agent 信号 -> agent 执行下单 -> 
 flowchart LR
     UI["Frontend (Ant Design)"] --> API["FastAPI"]
     API --> REPO["SQLite Repository"]
+    API --> GUARD["PositionGuardian / PositionService"]
     API --> PROC["Strategy Subprocess"]
     PROC --> OPEND["Futu OpenD"]
     PROC --> SIGNAL["MA Signal"]
-    PROC --> MON["PositionMonitor"]
+    GUARD --> OPEND
+    GUARD --> AGENT["openclaw agent"]
     PROC --> AGENT["openclaw agent"]
     AGENT --> EXEC["Agent 执行交易"]
     EXEC --> API
     PROC --> REPO
+    GUARD --> REPO
 ```
 
 关键点：
 
 - 策略运行在子进程，不在 FastAPI 主进程内。
-- API 不直接写子进程内存。
-- API 通过 SQLite 写命令，子进程轮询数据库后执行。
+- 成交确认统一在主进程通过 `PositionService` 落库。
+- 子进程不再消费确认命令，只从数据库读取策略持仓和待确认订单。
 - 数据库是跨进程共享状态源，内存只是子进程内的热状态。
 
 ## 目录结构
@@ -72,11 +76,13 @@ quant-trading-system/
 │   │   └── futu/
 │   │       └── quote_gateway.py       # OpenD 行情接入
 │   ├── monitoring/
-│   │   └── position_monitor.py        # 已成交持仓的兜底风控
+│   │   ├── guardian.py                # 主进程账户级持仓守护器
+│   │   └── position_monitor.py        # 兼容/本地测试用持仓监控
 │   ├── repositories/
 │   │   ├── runtime_repository.py      # SQLite repository 层
 │   │   └── sqlite.py                  # SQLite 连接封装
 │   ├── services/
+│   │   ├── position_service.py        # 成交确认与持仓落账服务
 │   │   └── strategy_manager.py        # 策略注册/加载/参数构建
 │   ├── strategies/
 │   │   ├── runtime/
@@ -113,12 +119,12 @@ quant-trading-system/
 4. 策略发出 `BUY` / `SELL` 交易意图。
 5. `signal_sender` 将意图发给 agent。
 6. agent 实际交易成功后调用确认接口。
-7. API 把确认写入 SQLite。
-8. 子进程消费命令并更新：
-   - `PositionMonitor`
-   - `positions`
+7. FastAPI 主进程中的 `PositionService` 直接更新 SQLite：
+   - `strategy_positions`
+   - `account_positions`
    - `pending_orders`
    - `executions`
+8. 子进程在后续报价处理中从数据库读取最新持仓与 pending 状态。
 
 ### 回测
 
@@ -132,10 +138,10 @@ quant-trading-system/
 
 - `strategy_runs`
   - 策略运行实例
-- `runtime_commands`
-  - API 投递给子进程的控制命令
-- `positions`
-  - 当前聚合持仓快照
+- `strategy_positions`
+  - 按 `run_id + code` 维护的策略归属持仓
+- `account_positions`
+  - 按 `account_id + code` 维护的账户级聚合持仓
 - `pending_orders`
   - 待确认 `BUY` / `SELL`
 - `executions`
@@ -143,7 +149,8 @@ quant-trading-system/
 
 这意味着：
 
-- 同一标的多次成交后，`positions` 里仍然只有一条聚合记录
+- 同一标的可在多个策略实例下分别保留归属持仓
+- 同时会在 `account_positions` 中聚合成账户总仓位
 - 每次成交都会在 `executions` 里新增一条历史记录
 
 ## 环境要求
@@ -249,6 +256,7 @@ python3 backtest/run_backtest.py \
 - `GET /api/runs/{run_id}/state`
 - `POST /api/runs/{run_id}/confirm-buy`
 - `POST /api/runs/{run_id}/confirm-sell`
+- `POST /api/accounts/{account_id}/confirm-sell`
 
 详细请求体和返回示例见：
 
@@ -277,7 +285,7 @@ POST /api/runs/{run_id}/confirm-buy
 
 ### 卖出确认
 
-agent 卖出成功后调用：
+策略发出的卖出意图，agent 成交后调用：
 
 ```http
 POST /api/runs/{run_id}/confirm-sell
@@ -294,6 +302,25 @@ POST /api/runs/{run_id}/confirm-sell
 }
 ```
 
+### guardian 账户级卖出确认
+
+如果卖出信号来自 guardian 兜底风控，则不使用 `run_id`，而是按账户级接口确认：
+
+```http
+POST /api/accounts/{account_id}/confirm-sell
+```
+
+请求体示例：
+
+```json
+{
+  "code": "HK.03690",
+  "qty": 300,
+  "exitPrice": 91.5,
+  "reason": "guardian stop sell"
+}
+```
+
 ### 状态核对
 
 确认后可通过：
@@ -305,6 +332,7 @@ GET /api/runs/{run_id}/state
 检查三类结果：
 
 - `positions`
+- `accountPositions`
 - `pendingOrders`
 - `executions`
 
@@ -331,6 +359,6 @@ python3 -m compileall backend backtest tests
 
 - 当前是单机 SQLite 方案，适合当前开发和单节点运行。
 - `backend/data/runtime.sqlite3` 是运行时数据库，不建议提交。
-- `PositionMonitor` 运行在策略子进程里，不在 FastAPI 主进程里。
-- API 不直接修改子进程对象，只通过 SQLite 命令表与状态表交互。
+- 正式兜底风控由主进程中的 `PositionGuardian` 基于 `account_positions` 执行。
+- API 不直接修改子进程对象，成交确认统一通过主进程 `PositionService` 落库。
 - 如果 agent 执行了买卖但没有回调确认接口，数据库状态不会更新。

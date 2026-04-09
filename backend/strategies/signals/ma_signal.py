@@ -126,6 +126,9 @@ class BaseMaSignal:
     def can_send_sell(self, code, position_qty, qty):
         raise NotImplementedError
 
+    def replace_pending_orders(self, pending_orders):
+        raise NotImplementedError
+
     def evaluate_quote(self, quote_data, position_qty=0):
         """
         在最新报价到达时评估是否产生 BUY / SELL 意图。
@@ -218,6 +221,12 @@ class SinglePositionMaSignal(BaseMaSignal):
     def can_send_sell(self, code, position_qty, qty):
         return position_qty > 0 and code not in self.pending_sells and qty > 0
 
+    def replace_pending_orders(self, pending_orders):
+        buy_codes = {item['code'] for item in pending_orders if item['side'] == 'BUY'}
+        sell_codes = {item['code'] for item in pending_orders if item['side'] == 'SELL'}
+        self.pending_buys = buy_codes
+        self.pending_sells = sell_codes
+
 
 class PyramidingMaSignal(BaseMaSignal):
     """加仓模型：允许继续买，但总仓位不能超过单标的上限。"""
@@ -266,3 +275,14 @@ class PyramidingMaSignal(BaseMaSignal):
     def can_send_sell(self, code, position_qty, qty):
         pending_qty = self.get_pending_sell_qty(code)
         return position_qty > 0 and qty > 0 and pending_qty == 0
+
+    def replace_pending_orders(self, pending_orders):
+        pending_buys = {}
+        pending_sells = {}
+        for item in pending_orders:
+            if item['side'] == 'BUY':
+                pending_buys[item['code']] = item['qty']
+            elif item['side'] == 'SELL':
+                pending_sells[item['code']] = item['qty']
+        self.pending_buys = pending_buys
+        self.pending_sells = pending_sells

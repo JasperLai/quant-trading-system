@@ -2,27 +2,27 @@
 
 ## 1. 文档范围
 
-本文档描述当前代码库中的策略管理、实时运行、信号发送、持仓监控与回测复用设计。
+本文档描述当前代码库中的策略管理、实时运行、成交确认、账户级风控与回测复用设计。
 
-文档基于以下实现文件：
+核心实现文件：
 
+- `/Users/mubinlai/code/quant-trading-system/backend/api/app.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/services/strategy_manager.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/services/position_service.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/strategies/signals/ma_signal.py`
 - `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/realtime_runner.py`
-- `/Users/mubinlai/code/quant-trading-system/backend/integrations/agent/signal_sender.py`
-- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/position_monitor.py`
-- `/Users/mubinlai/code/quant-trading-system/backend/api/app.py`
-
-本文档描述的是当前实现，不是理想化方案。
+- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/guardian.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/repositories/runtime_repository.py`
 
 ## 2. 设计目标
 
-当前设计主要解决三个问题：
+当前设计主要解决以下问题：
 
-1. 将 API 接入、策略判断、信号发送拆开，避免强耦合。
-2. 让同一套策略逻辑既能用于实时运行，也能用于历史回测。
-3. 将“发出交易意图”和“成交后登记持仓”分离，避免未成交单被误记为持仓。
-4. 将运行状态、持仓和待确认命令落到 SQLite，避免关键状态只存在进程内存。
+1. 将行情接入、策略判断、信号发送、成交确认解耦。
+2. 让同一套信号逻辑同时服务于实时运行和回测。
+3. 将“交易意图”和“成交事实”分离，避免未成交订单被误登记为持仓。
+4. 将持仓事实统一收敛到数据库，避免主进程和子进程分别维护两套账。
+5. 将兜底风控从策略子进程剥离，使策略停止后已有仓位仍可持续监控。
 
 ## 3. 总体架构
 
@@ -30,16 +30,27 @@
 flowchart LR
     UI["AntD Frontend"] --> API["FastAPI Strategy Service"]
     API --> SM["StrategyManager"]
+    API --> PS["PositionService"]
+    API --> PG["PositionGuardian"]
     API --> REPO["SQLite Runtime Repository"]
     SM --> RT["Realtime Strategy Runner"]
-    RT --> OD["Futu OpenD / OpenQuoteContext"]
+    RT --> OD["Futu OpenD"]
     RT --> SG["MA Signal"]
     RT --> SS["Signal Sender"]
-    RT --> PM["Position Monitor"]
     RT --> REPO
-    SS --> OC["openclaw agent"]
-    PM --> OC
+    PG --> OD
+    PG --> SS
+    PS --> REPO
+    SS --> AG["Agent / openclaw"]
+    AG --> API
 ```
+
+核心原则：
+
+- 策略运行在子进程。
+- 成交确认统一在主进程处理。
+- SQLite 是跨进程共享状态源。
+- 子进程只保留高频热状态，不再作为持仓事实来源。
 
 ## 4. 模块职责
 
@@ -52,20 +63,15 @@ flowchart LR
 
 1. 注册可用策略。
 2. 管理策略元数据。
-3. 根据策略名和参数创建实时策略实例。
-4. 根据策略名和参数创建纯信号实例。
+3. 创建实时运行实例。
+4. 创建回测使用的纯信号实例。
 
-核心设计：
+关键设计：
 
-- `STRATEGY_REGISTRY` 同时注册两类实现：
+- `STRATEGY_REGISTRY` 同时维护：
   - `runtime_class`
   - `signal_class`
-- `STRATEGY_METADATA` 用于前端展示和默认参数管理。
-
-当前已注册策略：
-
-- `single_position_ma`
-- `pyramiding_ma`
+- `STRATEGY_METADATA` 供前端和 API 展示策略说明与默认参数。
 
 ### 4.2 纯信号层
 
@@ -74,25 +80,27 @@ flowchart LR
 
 职责：
 
-1. 维护历史 K 线收盘价样本。
-2. 根据 `time_key` 去重并更新样本。
-3. 计算短期/长期 MA。
-4. 根据持仓模型判断是否产生 BUY / SELL 信号。
+1. 维护历史日线样本。
+2. 按 `time_key` 去重更新 bar。
+3. 计算短期 / 长期 MA。
+4. 依据当前持仓数量与 pending 状态生成 `BUY` / `SELL` 意图。
+5. 从数据库恢复 `pending_orders` 对应的运行态。
 
 不负责：
 
 1. OpenD 连接。
-2. 行情订阅。
-3. OpenClaw 调用。
-4. 持仓登记和止损止盈执行。
+2. API 调用。
+3. Agent 发送。
+4. 成交落账。
 
-核心状态：
+核心热状态：
 
-- `prices[code]`：历史收盘价样本。
-- `bar_time_keys[code]`：用于按 `time_key` 去重。
-- `last_short_ma / last_long_ma`：上次参考均线值。
-- `pending_buys`：待确认买单状态。
-- `pending_sells`：待确认卖单状态。
+- `prices[code]`
+- `bar_time_keys[code]`
+- `last_short_ma[code]`
+- `last_long_ma[code]`
+- `pending_buys`
+- `pending_sells`
 
 ### 4.3 实时运行适配层
 
@@ -102,54 +110,64 @@ flowchart LR
 职责：
 
 1. 连接 OpenD。
-2. 订阅日 K 和实时报价。
-3. 初始化历史日线数据。
-4. 将报价回调转成对纯信号层的调用。
-5. 将 BUY / SELL 信号转交给 agent 对接层。
-6. 将成交确认后的持仓交给 `position_monitor`。
+2. 订阅 `K_DAY` 和 `QUOTE`。
+3. 初始化历史日线样本。
+4. 将报价回调转交给 `ma_signal`。
+5. 发出标准化 `BUY` / `SELL` 意图给 agent。
+6. 从数据库读取：
+   - `strategy_positions`
+   - `pending_orders`
 
-这里是策略与外部世界之间的桥接层。
+说明：
 
-### 4.4 Signal Sender
+- 运行器不再负责正式成交落账。
+- `confirm_position()` / `confirm_exit()` 仅保留给兼容测试和极简离线场景。
+
+### 4.4 PositionService
+
+文件：
+- `/Users/mubinlai/code/quant-trading-system/backend/services/position_service.py`
+
+职责：
+
+1. 处理 `confirm-buy` / `confirm-sell`。
+2. 将一笔成交事实同时投影到三层数据模型：
+   - `executions`
+   - `strategy_positions`
+   - `account_positions`
+3. 清理对应 `pending_orders`。
+
+这是当前架构下的唯一正式落账入口。
+
+### 4.5 PositionGuardian
+
+文件：
+- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/guardian.py`
+
+职责：
+
+1. 常驻于 FastAPI 主进程。
+2. 持续读取 `account_positions`。
+3. 统一订阅账户级持仓标的报价。
+4. 触发固定 `-20%` 止损和 `+30%` 止盈兜底卖出。
+
+说明：
+
+- 策略停止后，`guardian` 仍会继续监控账户级仓位。
+- `position_monitor.py` 仅保留为兼容 / 本地测试路径，不是正式持仓事实来源。
+
+### 4.6 Signal Sender
 
 文件：
 - `/Users/mubinlai/code/quant-trading-system/backend/integrations/agent/signal_sender.py`
 
 职责：
 
-1. 统一构造交易信号消息。
+1. 统一封装交易信号。
 2. 调用 `openclaw agent`。
 3. 记录发送日志。
 
-它不关心均线策略细节，只关心收到一个标准化交易信号后如何发送。
-
-### 4.5 Position Monitor
-
-文件：
-- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/position_monitor.py`
-
-职责：
-
-1. 保存已成交持仓。
-2. 支持累计加仓后的加权均价。
-3. 在行情更新时检查止损/止盈。
-4. 触发极端风险时发送兜底 SELL 信号。
-
-它不负责决定正常的策略性买卖，只负责为已成交仓位提供固定 `-20%` 止损和 `+30%` 止盈兜底。
-
-### 4.6 后台服务
-
-文件：
-- `/Users/mubinlai/code/quant-trading-system/backend/app.py`
-
-职责：
-
-1. 提供策略列表接口。
-2. 提供启动和停止策略接口。
-3. 以子进程方式托管策略运行。
-4. 收集并暴露日志。
-
-后台服务不在主进程里直接执行策略逻辑，而是通过 `subprocess.Popen` 启动策略脚本。
+它不关心策略细节，只关心如何将标准信号发给外部执行层。
 
 ### 4.7 Repository 层
 
@@ -159,256 +177,120 @@ flowchart LR
 
 职责：
 
-1. 持久化 `strategy_runs`。
-2. 持久化 `runtime_commands`。
-3. 持久化 `positions`。
-4. 持久化 `pending_orders`。
-5. 为 API 和策略子进程提供共享状态源。
+1. 持久化运行实例。
+2. 持久化策略归属持仓。
+3. 持久化账户级持仓。
+4. 持久化待确认订单。
+5. 持久化逐笔成交流水。
+6. 为主进程、guardian 和策略子进程提供共享状态源。
 
-当前 SQLite 不是可选辅助层，而是运行状态的共享仓储层。
+## 5. OpenD API 接入设计
 
-## 5. API 接入设计
-
-实时行情接入全部集中在：
+OpenD 相关逻辑集中在：
 
 - `/Users/mubinlai/code/quant-trading-system/backend/strategies/runtime/realtime_runner.py`
+- `/Users/mubinlai/code/quant-trading-system/backend/monitoring/guardian.py`
 
-当前主要使用了以下 Futu OpenD API：
+### 5.1 Realtime Runner
 
-### 5.1 建立行情上下文
+实时策略启动时：
 
-通过：
-
-```python
-OpenQuoteContext(host=host, port=port)
-```
-
-建立本地到 OpenD 的连接。
-
-### 5.2 注册报价回调
-
-通过：
-
-```python
-quote_ctx.set_handler(self.quote_handler)
-```
-
-注册 `StockQuoteHandlerBase` 子类。
-
-收到推送后，`QuoteHandler.on_recv_rsp()` 会把每条报价继续传给：
-
-```python
-self.strategy.on_quote(quote)
-```
-
-### 5.3 订阅数据
-
-当前实时策略启动时会做两类订阅：
-
-1. `SubType.K_DAY`
-   - 用途：保证可以初始化日线数据。
-   - 设置为 `subscribe_push=False`，不依赖日 K 推送驱动策略。
-
-2. `SubType.QUOTE`
-   - 用途：持续接收报价回调。
-   - 实时策略的盘中判断依赖这个推送。
-
-### 5.4 初始化历史日线
-
-启动后调用：
+1. 建立 `OpenQuoteContext(host, port)`
+2. 注册 `StockQuoteHandlerBase` 子类
+3. 订阅：
+   - `SubType.K_DAY`
+   - `SubType.QUOTE`
+4. 通过：
 
 ```python
 get_cur_kline(code, long_ma_period + 5, KLType.K_DAY)
 ```
 
-用途：
+初始化历史样本。
 
-1. 获取足够的历史日线样本。
-2. 构建初始 `prices` 序列。
-3. 刷新短期/长期 MA 基准值。
+策略实时判断方式为：
 
-### 5.5 实时计算方式
+1. 历史日线作为 MA 样本基础。
+2. 用最新报价替换最后一根日线收盘价。
+3. 计算盘中的短期 / 长期 MA。
 
-当前策略不是分钟 K 驱动，而是：
-
-1. 用历史日线作为 MA 样本基础。
-2. 用最新 `QUOTE.last_price` 替换最后一根日线的收盘价。
-3. 计算盘中的“实时短期 MA / 实时长期 MA”。
-
-这样实现的是：
+即：
 
 - `日线 MA + QUOTE 实时判断`
 
-而不是：
+### 5.2 PositionGuardian
 
-- `分钟 K 策略`
+guardian 独立订阅 `account_positions` 中涉及的标的报价。
 
-### 5.6 运行状态持久化
+它不参与策略判断，只做账户级止损止盈兜底。
 
-运行时状态目前采用“进程内热状态 + SQLite 持久化快照”的模式。
+## 6. 数据模型
 
-SQLite 中有 4 张核心表：
+当前模型分为三层：
 
-1. `strategy_runs`
-   - 记录 `run_id`、策略名、参数、PID、状态、日志路径
-2. `runtime_commands`
-   - 记录 agent 回调写入的成交确认命令
-3. `positions`
-   - 记录策略子进程同步出的已确认持仓
-4. `pending_orders`
-   - 记录待确认的 BUY / SELL
+### 6.1 executions
 
-设计意图是：
+逐笔成交流水。
 
-- API 不直接改写策略子进程内存
-- API 负责写数据库命令
-- 策略子进程轮询数据库命令并处理
-- 策略子进程把最新持仓和 pending 状态再同步回数据库
+用途：
 
-这样 API 可以直接从数据库查询状态，而不是依赖活跃子进程的内存对象。
+- 审计
+- 复盘
+- 已实现盈亏记录
 
-## 6. 策略实现设计
+### 6.2 strategy_positions
 
-### 6.1 数据更新
+按 `run_id + code` 维护的策略归属持仓。
 
-纯信号层通过 `update_bar(bar_data)` 维护样本。
+用途：
 
-去重规则：
+- 策略归因
+- 策略维度状态恢复
+- 判断某个策略实例当前是否已有仓位
 
-1. 如果 `time_key` 不同，追加一条新 bar。
-2. 如果 `time_key` 相同，更新最后一条价格。
+### 6.3 account_positions
 
-这样避免了以前按 `close_price` 去重带来的错误。
+按 `account_id + code` 维护的账户级聚合持仓。
 
-### 6.2 实时报价评估
+用途：
 
-纯信号层通过 `evaluate_quote(quote_data, position_qty)` 评估交易意图。
+- 账户级风控
+- guardian 统一监控
+- 前端展示真实总仓位
 
-核心流程：
+设计含义：
 
-1. 样本不足长期均线周期时，不评估。
-2. 计算实时短期/长期 MA。
-3. 用 `last_short_ma / last_long_ma` 与当前值比较。
-4. 满足金叉条件产生 BUY 意图，满足死叉条件产生 SELL 意图。
+- 同一标的可由多个策略实例分别持有。
+- 同时这些仓位会聚合到账户级总仓位。
 
-当前核心判定为：
+## 7. 成交确认链路
 
-```python
-if prev_short_ma <= prev_long_ma and short_ma > long_ma:
-    action = 'BUY'
-elif prev_short_ma >= prev_long_ma and short_ma < long_ma:
-    action = 'SELL'
-```
+成交确认不再通过子进程命令队列完成。
 
-这意味着当前策略是“事件驱动的金叉买入 / 死叉卖出”，不是“只要当前均线状态满足就立即交易”。
-
-### 6.3 两种仓位模型
-
-#### 单仓模型
-
-类：
-- `SinglePositionMaSignal`
-
-规则：
-
-1. 同一标的同一时间只允许一笔正式持仓。
-2. 同一标的只允许一个 pending BUY。
-
-#### 有上限加仓模型
-
-类：
-- `PyramidingMaSignal`
-
-规则：
-
-1. 允许继续 BUY。
-2. 但 `当前已持仓数量 + 待确认数量 + 本次买入数量` 不能超过上限。
-
-## 7. 信号发送与持仓监控解耦
-
-这是当前设计的核心。
-
-### 7.1 解耦前的问题
-
-如果策略在发出 BUY 时立刻登记持仓，会出现：
-
-1. 订单未成交却被当作持仓。
-2. 成交失败后风控状态错误。
-3. 执行层与策略层强耦合。
-
-### 7.2 当前解耦方式
-
-当前 BUY / SELL 链路分成三段：
-
-1. `MA Signal`
-   - 判断是否应当发 BUY 或 SELL。
-
-2. `Realtime Runner`
-   - 负责把交易意图转换为一次发送动作。
-   - 同时把标的记为 `pending buy` 或 `pending sell`。
-
-3. 外部执行回报
-   - 成交后再调用 `confirm_position(...)`。
-   - 这时才进入 `PositionMonitor`。
-
-因此：
-
-- BUY / SELL 信号都不等于已经成交。
-- 持仓状态以成交确认结果为准。
-
-### 7.3 策略信号流程
+当前链路为：
 
 ```mermaid
 sequenceDiagram
-    participant Q as Quote Callback
     participant RT as Realtime Runner
-    participant SG as MA Signal
-    participant SS as Signal Sender
     participant AG as Agent
-    participant PM as Position Monitor
+    participant API as FastAPI
+    participant PS as PositionService
+    participant REPO as SQLite
 
-    Q->>RT: on_quote(quote)
-    RT->>SG: evaluate_quote(quote, position_qty)
-    SG-->>RT: action / qty
-    alt 触发金叉
-        RT->>SS: send_signal(BUY)
-        SS->>AG: openclaw agent
-        RT->>SG: add_pending_buy(code, qty)
-        AG-->>RT: 成交确认
-        RT->>SG: clear_pending_buy(code, qty)
-        RT->>PM: confirm_position(...)
-    else 触发死叉
-        RT->>SS: send_signal(SELL)
-        SS->>AG: openclaw agent
-        RT->>SG: add_pending_sell(code, qty)
-        AG-->>RT: 成交确认
-        RT->>SG: clear_pending_sell(code, qty)
-        RT->>PM: remove_position(...)
-    end
+    RT->>AG: send BUY / SELL intent
+    AG->>API: confirm-buy / confirm-sell
+    API->>PS: confirm_position / confirm_exit
+    PS->>REPO: update strategy_positions
+    PS->>REPO: update account_positions
+    PS->>REPO: update pending_orders
+    PS->>REPO: insert executions
 ```
-
-### 7.4 SELL 流程
-
-SELL 有两类来源：
-
-1. 策略型 SELL
-   - 例如均线死叉卖出
-
-2. 风控型 SELL
-   - 例如 `PositionMonitor` 的固定 `-20%` 止损和 `+30%` 止盈
-
-流程：
-
-1. 报价进入 `Realtime Runner`
-2. `Realtime Runner` 调用 `monitor.on_tick(code, price)`
-3. 如果触发固定止损或止盈
-4. `PositionMonitor` 发送兜底 SELL 信号
-5. 持仓从监控器中移除
 
 这意味着：
 
-- 策略负责正常买卖观点
-- `PositionMonitor` 负责极端风险兜底
+- API 不写子进程内存。
+- 子进程也不再消费成交确认命令。
+- 数据库是唯一正式持仓事实来源。
 
 ## 8. 实时运行时序图
 
@@ -421,13 +303,14 @@ sequenceDiagram
     participant SG as MASignal
     participant SS as SignalSender
     participant AG as Agent/OpenClaw
-    participant PM as PositionMonitor
+    participant API as FastAPI
+    participant PS as PositionService
+    participant PG as PositionGuardian
 
     UI->>SM: start_strategy(name, params)
     SM->>RT: create runtime instance
-    RT->>OD: OpenQuoteContext()
-    RT->>OD: subscribe(K_DAY, push=false)
-    RT->>OD: subscribe(QUOTE, push=true)
+    RT->>OD: subscribe(K_DAY)
+    RT->>OD: subscribe(QUOTE)
     RT->>OD: get_cur_kline()
     OD-->>RT: historical daily bars
     RT->>SG: update_bar(bar)
@@ -435,97 +318,52 @@ sequenceDiagram
 
     loop QUOTE 推送
         OD-->>RT: QuoteHandler.on_recv_rsp(quote)
+        RT->>SG: restore pending from repository
         RT->>SG: evaluate_quote(quote, position_qty)
-        SG-->>RT: action?/ma values
-        alt 新金叉
-            RT->>SS: send_signal(BUY)
+        SG-->>RT: action?/qty
+        alt 产生 BUY / SELL
+            RT->>SS: send_signal(...)
             SS->>AG: openclaw agent
-        else 新死叉
-            RT->>SS: send_signal(SELL)
-            SS->>AG: openclaw agent
-        end
-        RT->>PM: on_tick(code, price)
-        alt 触发固定止损/止盈
-            PM->>AG: send SELL signal
         end
     end
+
+    AG->>API: confirm-buy / confirm-sell
+    API->>PS: apply execution to repository
+    PG->>OD: monitor account quotes
+    PG->>SS: fallback stop-loss / take-profit SELL
 ```
 
 ## 9. 启动流程图
 
 ```mermaid
 flowchart TD
-    A["启动策略"] --> B["StrategyManager 解析策略名和参数"]
+    A["启动策略"] --> B["StrategyManager 解析参数"]
     B --> C["创建 Realtime Runner"]
     C --> D["连接 OpenD"]
     D --> E["订阅 K_DAY"]
     E --> F["订阅 QUOTE"]
     F --> G["拉取历史日线"]
-    G --> H["喂给 MA Signal 建样本"]
-    H --> I["刷新短期/长期 MA 基线"]
-    I --> J["进入 QUOTE 事件循环"]
-    J --> K["实时计算 MA"]
-    K --> L{"是否产生新金叉/死叉?"}
-    L -- 否 --> M["继续等待报价"]
-    L -- 金叉 --> N["调用 Agent 对接层发 BUY"]
-    L -- 死叉 --> O["调用 Agent 对接层发 SELL"]
-    N --> P["进入 pending buy 状态"]
-    O --> Q["进入 pending sell 状态"]
-    P --> M
-    Q --> M
+    G --> H["建立 MA 样本"]
+    H --> I["进入报价循环"]
+    I --> J["读取 strategy_positions / pending_orders"]
+    J --> K["计算金叉 / 死叉"]
+    K --> L{"是否产生意图?"}
+    L -- 否 --> I
+    L -- 是 --> M["发送 BUY / SELL 给 agent"]
+    M --> N["agent 成交后回调 API"]
+    N --> O["PositionService 更新三层持仓模型"]
+    O --> I
 ```
 
-## 10. 后台服务运行模型
+## 10. 当前优点
 
-后台服务使用子进程托管策略，不把策略主循环直接塞进 FastAPI 线程。
+1. 实时与回测共享同一套信号层。
+2. 成交事实只由主进程落账，状态收敛更清晰。
+3. 策略停止后已有仓位仍由 guardian 托管。
+4. 同时保留策略归属视图和账户级总仓位视图。
 
-原因：
+## 11. 当前局限
 
-1. 长循环策略与 Web 请求生命周期不同。
-2. 子进程隔离后，单个策略崩溃不会直接影响 API 服务。
-3. 日志可以天然按运行实例落到单独文件。
-
-当前实现方式：
-
-1. `POST /api/runs`
-2. 构造 `python3 -m backend.cli.run_strategy ...`
-3. 用 `subprocess.Popen(...)` 启动
-4. 输出重定向到 `backend/logs/<run_id>.log`
-5. 前端通过日志接口读取尾部内容
-
-## 11. 当前设计的优点
-
-### 11.1 策略复用性更好
-
-实时与回测共享 `signal_class`，避免重复写一套均线逻辑。
-
-### 11.2 OpenD 依赖边界清晰
-
-OpenD 相关代码集中在 `Realtime Runner`，不会污染策略判断层。
-
-### 11.3 发送通道可替换
-
-如果未来不再使用 `openclaw agent`，只需要替换 agent 对接层实现。
-
-### 11.4 成交与持仓状态一致
-
-当前设计避免了“发 BUY 即登记仓位”的错误状态。
-
-## 12. 当前局限
-
-目前仍有这些限制：
-
-1. `confirm_position(...)` 还未接入正式的成交回报链路，需要外部调用。
-2. `PositionMonitor` 仍是进程内存状态，没有持久化。
-3. agent 对接层仍保留 `TEST_MODE`。
-4. 启动后如果已经是多头状态，不会补发 BUY，因为当前采用的是“新金叉事件”模型。
-5. 回测与实时虽然共用信号层，但执行与持仓模型仍可以继续抽象。
-
-## 13. 后续建议
-
-建议的下一步演进方向：
-
-1. 增加正式的成交确认回调接口，将 `confirm_position(...)` 接入后台服务。
-2. 将持仓、pending、运行参数持久化。
-3. 继续扩展 agent 对接层为统一执行网关接口。
-4. 把实时数据接入层继续抽象为 `MarketDataAdapter`，为未来替换行情源做准备。
+1. `position_monitor.py` 仍保留兼容路径，语义上容易与 guardian 混淆。
+2. guardian 当前按账户级总仓位发兜底 SELL，后续如需更细分配，需要补策略归属分摊规则。
+3. FastAPI 仍使用 `@app.on_event`，后续可迁移到 lifespan。

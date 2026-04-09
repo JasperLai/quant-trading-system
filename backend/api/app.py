@@ -15,7 +15,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.monitoring.guardian import PositionGuardian
 from backend.repositories.runtime_repository import RuntimeRepository
+from backend.services.position_service import PositionService
 from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +88,7 @@ class StrategyRuntime:
     def __init__(self):
         self.manager = StrategyManager()
         self.repository = RuntimeRepository(db_path=DB_PATH)
+        self.position_service = PositionService(self.repository)
         self.runs: Dict[str, StrategyRun] = {}
         self.lock = threading.Lock()
 
@@ -178,7 +181,9 @@ class StrategyRuntime:
             raise HTTPException(status_code=404, detail='Run not found')
         return {
             'run': run,
-            'positions': self.repository.list_positions(run_id),
+            'positions': self.repository.list_strategy_positions(run_id),
+            'strategyPositions': self.repository.list_strategy_positions(run_id),
+            'accountPositions': self.repository.list_account_positions(self.position_service.account_id),
             'pendingOrders': self.repository.list_pending_orders(run_id),
             'executions': self.repository.list_executions(run_id),
         }
@@ -202,41 +207,46 @@ class StrategyRuntime:
         logger.info("停止策略实例: run_id=%s", run_id)
         return run.to_dict()
 
-    def _append_command(self, run_id: str, action: str, payload: Dict):
-        with self.lock:
-            run = self.runs.get(run_id)
-        if run is None:
-            db_run = self.repository.get_run(run_id)
-            if db_run is None:
-                raise HTTPException(status_code=404, detail='Run not found')
-            raise HTTPException(status_code=409, detail='Run is not active')
-        if run.process.poll() is not None:
-            raise HTTPException(status_code=409, detail='Run is not active')
-        self.repository.enqueue_command(run_id, action, payload)
-        logger.info("写入运行命令: run_id=%s action=%s", run_id, action)
-        return {'status': 'queued', 'runId': run_id, 'command': payload}
-
     def confirm_buy(self, run_id: str, request: ConfirmBuyRequest):
-        payload = {
-            'action': 'confirm_buy',
-            'code': request.code,
-            'qty': request.qty,
-            'entry_price': request.entry_price,
-            'stop_loss': request.stop_loss,
-            'take_profit': request.take_profit,
-            'reason': request.reason,
-        }
-        return self._append_command(run_id, 'confirm_buy', payload)
+        db_run = self.repository.get_run(run_id)
+        if db_run is None:
+            raise HTTPException(status_code=404, detail='Run not found')
+        position = self.position_service.confirm_position(
+            run_id=run_id,
+            code=request.code,
+            qty=request.qty,
+            entry_price=request.entry_price,
+            stop_loss=request.stop_loss,
+            take_profit=request.take_profit,
+            reason=request.reason,
+        )
+        logger.info("确认买入并落库: run_id=%s code=%s qty=%s", run_id, request.code, request.qty)
+        return {'status': 'applied', 'runId': run_id, 'position': position}
 
     def confirm_sell(self, run_id: str, request: ConfirmSellRequest):
-        payload = {
-            'action': 'confirm_sell',
-            'code': request.code,
-            'qty': request.qty,
-            'exit_price': request.exit_price,
-            'reason': request.reason,
-        }
-        return self._append_command(run_id, 'confirm_sell', payload)
+        db_run = self.repository.get_run(run_id)
+        if db_run is None:
+            raise HTTPException(status_code=404, detail='Run not found')
+        remaining = self.position_service.confirm_exit(
+            run_id=run_id,
+            code=request.code,
+            qty=request.qty,
+            exit_price=request.exit_price,
+            reason=request.reason,
+        )
+        logger.info("确认卖出并落库: run_id=%s code=%s qty=%s", run_id, request.code, request.qty)
+        return {'status': 'applied', 'runId': run_id, 'remainingQty': remaining}
+
+    def confirm_account_sell(self, account_id: str, request: ConfirmSellRequest):
+        result = self.position_service.confirm_account_exit(
+            account_id=account_id,
+            code=request.code,
+            qty=request.qty,
+            exit_price=request.exit_price,
+            reason=request.reason,
+        )
+        logger.info("确认账户级卖出并落库: account_id=%s code=%s qty=%s", account_id, request.code, request.qty)
+        return {'status': 'applied', 'accountId': account_id, **result}
 
     def read_logs(self, run_id: str, lines: int = 200):
         with self.lock:
@@ -258,6 +268,19 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
+
+@app.on_event('startup')
+def startup_guardian():
+    app.state.guardian = PositionGuardian(runtime.repository)
+    app.state.guardian.start()
+
+
+@app.on_event('shutdown')
+def shutdown_guardian():
+    guardian_instance = getattr(app.state, 'guardian', None)
+    if guardian_instance is not None:
+        guardian_instance.stop()
 
 
 @app.get('/api/health')
@@ -303,3 +326,8 @@ def confirm_buy(run_id: str, request: ConfirmBuyRequest):
 @app.post('/api/runs/{run_id}/confirm-sell')
 def confirm_sell(run_id: str, request: ConfirmSellRequest):
     return runtime.confirm_sell(run_id, request)
+
+
+@app.post('/api/accounts/{account_id}/confirm-sell')
+def confirm_account_sell(account_id: str, request: ConfirmSellRequest):
+    return runtime.confirm_account_sell(account_id, request)

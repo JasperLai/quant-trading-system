@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runtime state repository backed by SQLite."""
 
+from contextlib import contextmanager
 import json
 import threading
 import time
@@ -16,7 +17,7 @@ class RuntimeRepository:
     def __init__(self, db_path=None):
         self.db_path = str(db_path or DEFAULT_DB_PATH)
         self.conn = connect(self.db_path)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self._init_schema()
 
     def _init_schema(self):
@@ -34,18 +35,7 @@ class RuntimeRepository:
                     log_path TEXT
                 );
 
-                CREATE TABLE IF NOT EXISTS runtime_commands (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at REAL NOT NULL,
-                    processed_at REAL,
-                    FOREIGN KEY(run_id) REFERENCES strategy_runs(run_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS positions (
+                CREATE TABLE IF NOT EXISTS strategy_positions (
                     run_id TEXT NOT NULL,
                     code TEXT NOT NULL,
                     qty INTEGER NOT NULL,
@@ -59,6 +49,19 @@ class RuntimeRepository:
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (run_id, code),
                     FOREIGN KEY(run_id) REFERENCES strategy_runs(run_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS account_positions (
+                    account_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    qty INTEGER NOT NULL,
+                    entry REAL NOT NULL,
+                    stop REAL NOT NULL,
+                    profit REAL NOT NULL,
+                    stop_pct REAL NOT NULL,
+                    profit_pct REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (account_id, code)
                 );
 
                 CREATE TABLE IF NOT EXISTS pending_orders (
@@ -90,7 +93,19 @@ class RuntimeRepository:
             )
             self.conn.commit()
 
-    def upsert_run(self, run_id, strategy_name, config, pid, status, created_at=None, stopped_at=None, log_path=None):
+    @contextmanager
+    def transaction(self):
+        with self.lock:
+            self.conn.execute('BEGIN')
+            try:
+                yield
+            except Exception:
+                self.conn.rollback()
+                raise
+            else:
+                self.conn.commit()
+
+    def upsert_run(self, run_id, strategy_name, config, pid, status, created_at=None, stopped_at=None, log_path=None, commit=True):
         created_at = created_at or time.time()
         with self.lock:
             self.conn.execute(
@@ -107,15 +122,17 @@ class RuntimeRepository:
                 ''',
                 (run_id, strategy_name, json.dumps(config, ensure_ascii=False), pid, status, created_at, stopped_at, log_path),
             )
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
 
-    def update_run_status(self, run_id, status, stopped_at=None, pid=None):
+    def update_run_status(self, run_id, status, stopped_at=None, pid=None, commit=True):
         with self.lock:
             self.conn.execute(
                 'UPDATE strategy_runs SET status=?, stopped_at=COALESCE(?, stopped_at), pid=COALESCE(?, pid) WHERE run_id=?',
                 (status, stopped_at, pid, run_id),
             )
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
 
     def get_run(self, run_id):
         with self.lock:
@@ -127,62 +144,7 @@ class RuntimeRepository:
             rows = self.conn.execute('SELECT * FROM strategy_runs ORDER BY created_at DESC').fetchall()
         return [self._row_to_run(row) for row in rows]
 
-    def enqueue_command(self, run_id, action, payload):
-        with self.lock:
-            self.conn.execute(
-                'INSERT INTO runtime_commands (run_id, action, payload_json, status, created_at) VALUES (?, ?, ?, ?, ?)',
-                (run_id, action, json.dumps(payload, ensure_ascii=False), 'pending', time.time()),
-            )
-            self.conn.commit()
-
-    def fetch_pending_commands(self, run_id):
-        with self.lock:
-            rows = self.conn.execute(
-                'SELECT * FROM runtime_commands WHERE run_id=? AND status=? ORDER BY id ASC',
-                (run_id, 'pending'),
-            ).fetchall()
-        result = []
-        for row in rows:
-            payload = json.loads(row['payload_json'])
-            payload['_command_id'] = row['id']
-            result.append(payload)
-        return result
-
-    def mark_command_processed(self, command_id):
-        with self.lock:
-            self.conn.execute(
-                'UPDATE runtime_commands SET status=?, processed_at=? WHERE id=?',
-                ('processed', time.time(), command_id),
-            )
-            self.conn.commit()
-
-    def replace_positions(self, run_id, positions):
-        now = time.time()
-        with self.lock:
-            self.conn.execute('DELETE FROM positions WHERE run_id=?', (run_id,))
-            for code, pos in positions.items():
-                self.conn.execute(
-                    '''
-                    INSERT INTO positions (run_id, code, qty, entry, stop, profit, stop_pct, profit_pct, reason, entry_time, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (
-                        run_id,
-                        code,
-                        pos['qty'],
-                        pos['entry'],
-                        pos['stop'],
-                        pos['profit'],
-                        pos['stop_pct'],
-                        pos['profit_pct'],
-                        pos.get('reason'),
-                        pos.get('entry_time'),
-                        now,
-                    ),
-                )
-            self.conn.commit()
-
-    def replace_pending_orders(self, run_id, pending_orders):
+    def replace_pending_orders(self, run_id, pending_orders, commit=True):
         now = time.time()
         with self.lock:
             self.conn.execute('DELETE FROM pending_orders WHERE run_id=?', (run_id,))
@@ -191,11 +153,175 @@ class RuntimeRepository:
                     'INSERT INTO pending_orders (run_id, code, side, qty, updated_at) VALUES (?, ?, ?, ?, ?)',
                     (run_id, item['code'], item['side'], item['qty'], now),
                 )
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
 
-    def list_positions(self, run_id):
+    def upsert_strategy_position(self, run_id, code, position, commit=True):
+        now = time.time()
         with self.lock:
-            rows = self.conn.execute('SELECT * FROM positions WHERE run_id=? ORDER BY code', (run_id,)).fetchall()
+            values = (
+                run_id,
+                code,
+                position['qty'],
+                position['entry'],
+                position['stop'],
+                position['profit'],
+                position['stop_pct'],
+                position['profit_pct'],
+                position.get('reason'),
+                position.get('entry_time'),
+                now,
+            )
+            self.conn.execute(
+                '''
+                INSERT INTO strategy_positions (run_id, code, qty, entry, stop, profit, stop_pct, profit_pct, reason, entry_time, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, code) DO UPDATE SET
+                    qty=excluded.qty,
+                    entry=excluded.entry,
+                    stop=excluded.stop,
+                    profit=excluded.profit,
+                    stop_pct=excluded.stop_pct,
+                    profit_pct=excluded.profit_pct,
+                    reason=excluded.reason,
+                    entry_time=excluded.entry_time,
+                    updated_at=excluded.updated_at
+                ''',
+                values,
+            )
+            if commit:
+                self.conn.commit()
+
+    def delete_strategy_position(self, run_id, code, commit=True):
+        with self.lock:
+            self.conn.execute('DELETE FROM strategy_positions WHERE run_id=? AND code=?', (run_id, code))
+            if commit:
+                self.conn.commit()
+
+    def get_strategy_position(self, run_id, code):
+        with self.lock:
+            row = self.conn.execute(
+                'SELECT * FROM strategy_positions WHERE run_id=? AND code=?',
+                (run_id, code),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_pending_order(self, run_id, code, side, qty, commit=True):
+        now = time.time()
+        with self.lock:
+            self.conn.execute(
+                '''
+                INSERT INTO pending_orders (run_id, code, side, qty, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, code, side) DO UPDATE SET
+                    qty=excluded.qty,
+                    updated_at=excluded.updated_at
+                ''',
+                (run_id, code, side, qty, now),
+            )
+            if commit:
+                self.conn.commit()
+
+    def remove_pending_order(self, run_id, code, side, commit=True):
+        with self.lock:
+            self.conn.execute(
+                'DELETE FROM pending_orders WHERE run_id=? AND code=? AND side=?',
+                (run_id, code, side),
+            )
+            if commit:
+                self.conn.commit()
+
+    def list_all_pending_orders(self, side=None):
+        with self.lock:
+            if side is None:
+                rows = self.conn.execute(
+                    'SELECT * FROM pending_orders ORDER BY run_id, code, side'
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    'SELECT * FROM pending_orders WHERE side=? ORDER BY run_id, code',
+                    (side,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_strategy_positions(self, run_id):
+        with self.lock:
+            rows = self.conn.execute('SELECT * FROM strategy_positions WHERE run_id=? ORDER BY code', (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_strategy_positions_by_code(self, code):
+        with self.lock:
+            rows = self.conn.execute(
+                '''
+                SELECT * FROM strategy_positions
+                WHERE code=?
+                ORDER BY COALESCE(entry_time, ''), updated_at, run_id
+                ''',
+                (code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_account_position(self, account_id, code, position, commit=True):
+        now = time.time()
+        with self.lock:
+            self.conn.execute(
+                '''
+                INSERT INTO account_positions (account_id, code, qty, entry, stop, profit, stop_pct, profit_pct, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, code) DO UPDATE SET
+                    qty=excluded.qty,
+                    entry=excluded.entry,
+                    stop=excluded.stop,
+                    profit=excluded.profit,
+                    stop_pct=excluded.stop_pct,
+                    profit_pct=excluded.profit_pct,
+                    updated_at=excluded.updated_at
+                ''',
+                (
+                    account_id,
+                    code,
+                    position['qty'],
+                    position['entry'],
+                    position['stop'],
+                    position['profit'],
+                    position['stop_pct'],
+                    position['profit_pct'],
+                    now,
+                ),
+            )
+            if commit:
+                self.conn.commit()
+
+    def get_account_position(self, account_id, code):
+        with self.lock:
+            row = self.conn.execute(
+                'SELECT * FROM account_positions WHERE account_id=? AND code=?',
+                (account_id, code),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_account_position(self, account_id, code, commit=True):
+        with self.lock:
+            self.conn.execute(
+                'DELETE FROM account_positions WHERE account_id=? AND code=?',
+                (account_id, code),
+            )
+            if commit:
+                self.conn.commit()
+
+    def list_account_positions(self, account_id):
+        with self.lock:
+            rows = self.conn.execute(
+                'SELECT * FROM account_positions WHERE account_id=? ORDER BY code',
+                (account_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_all_account_positions(self):
+        with self.lock:
+            rows = self.conn.execute(
+                'SELECT * FROM account_positions ORDER BY account_id, code'
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def list_pending_orders(self, run_id):
@@ -216,6 +342,7 @@ class RuntimeRepository:
         realized_pnl=None,
         metadata=None,
         executed_at=None,
+        commit=True,
     ):
         executed_at = executed_at or time.time()
         metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
@@ -243,7 +370,8 @@ class RuntimeRepository:
                     executed_at,
                 ),
             )
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
 
     def list_executions(self, run_id):
         with self.lock:

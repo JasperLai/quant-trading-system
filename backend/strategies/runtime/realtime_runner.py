@@ -6,12 +6,13 @@ import time
 
 from futu import RET_ERROR, RET_OK, StockQuoteHandlerBase
 
-from backend.core.config import DEFAULT_HOST, DEFAULT_PORT, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from backend.core.config import DEFAULT_HOST, DEFAULT_PORT, RUNTIME_STATE_REFRESH_INTERVAL_SEC, STOP_LOSS_PCT, TAKE_PROFIT_PCT
 from backend.core.logging import get_logger
 from backend.integrations.agent.signal_sender import send_signal
 from backend.integrations.futu.quote_gateway import FutuQuoteGateway
 from backend.monitoring.position_monitor import PositionMonitor
 from backend.repositories.runtime_repository import RuntimeRepository
+from backend.services.position_service import PositionService
 
 logger = get_logger(__name__)
 
@@ -56,11 +57,15 @@ class RealtimeMaStrategyRunner:
         self.long_ma_period = self.signal.long_ma_period
         self.order_qty = self.signal.order_qty
         self.gateway = FutuQuoteGateway(host=host, port=port)
+        # 兼容无数据库的本地测试/离线场景；正式架构下不再作为状态事实来源。
         self.monitor = PositionMonitor()
         self.quote_handler = QuoteHandler(self)
         self.run_id = run_id
         self.repository = RuntimeRepository(db_path=db_path) if run_id else None
+        self.position_service = PositionService(self.repository) if self.repository is not None else None
         self._last_runtime_state_signature = None
+        self._last_repository_refresh_ts = 0.0
+        self._strategy_positions_by_code = {}
 
     @property
     def quote_ctx(self):
@@ -123,7 +128,7 @@ class RealtimeMaStrategyRunner:
         )
 
     def sync_runtime_state(self, force=False):
-        """将当前持仓和 pending 状态同步到数据库。"""
+        """将当前 pending 状态同步到数据库。"""
         if self.repository is None or self.run_id is None:
             return
 
@@ -137,19 +142,27 @@ class RealtimeMaStrategyRunner:
                 pending_orders.append({'code': code, 'side': 'SELL', 'qty': sell_qty})
 
         state_signature = json.dumps(
-            {
-                'positions': self.monitor.get_all_positions(),
-                'pending_orders': pending_orders,
-            },
+            {'pending_orders': pending_orders},
             ensure_ascii=False,
             sort_keys=True,
         )
         if not force and state_signature == self._last_runtime_state_signature:
             return
 
-        self.repository.replace_positions(self.run_id, self.monitor.get_all_positions())
         self.repository.replace_pending_orders(self.run_id, pending_orders)
         self._last_runtime_state_signature = state_signature
+
+    def refresh_runtime_state_from_repository(self, force=False):
+        if self.repository is None or self.run_id is None:
+            return
+        now = time.time()
+        if not force and now - self._last_repository_refresh_ts < RUNTIME_STATE_REFRESH_INTERVAL_SEC:
+            return
+        positions = self.repository.list_strategy_positions(self.run_id)
+        pending_orders = self.repository.list_pending_orders(self.run_id)
+        self._strategy_positions_by_code = {item['code']: item for item in positions}
+        self.signal.replace_pending_orders(pending_orders)
+        self._last_repository_refresh_ts = now
 
     def on_buy_signal(self, code, price, qty):
         logger.info("🟢 金叉信号！买入 %s @ %s", code, price)
@@ -164,7 +177,11 @@ class RealtimeMaStrategyRunner:
     def on_quote(self, quote_data):
         code = quote_data['code']
         price = quote_data['last_price']
-        pos_info = self.monitor.get_position_info(code)
+        self.refresh_runtime_state_from_repository()
+        if self.repository is not None and self.run_id is not None:
+            pos_info = self._strategy_positions_by_code.get(code)
+        else:
+            pos_info = self.monitor.get_position_info(code)
         position_qty = pos_info['qty'] if pos_info else 0
 
         result = self.signal.evaluate_quote(quote_data, position_qty=position_qty)
@@ -183,7 +200,6 @@ class RealtimeMaStrategyRunner:
             elif result['action'] == 'SELL':
                 self.on_sell_signal(code, price, result['qty'])
 
-        self.monitor.on_tick(code, price)
         self.sync_runtime_state()
 
     def confirm_position(
@@ -195,97 +211,60 @@ class RealtimeMaStrategyRunner:
         take_profit=None,
         reason='均线金叉买入',
     ):
-        stop_loss = stop_loss if stop_loss is not None else round(entry_price * (1 + STOP_LOSS_PCT), 2)
-        take_profit = take_profit if take_profit is not None else round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
+        """兼容入口。
+
+        真实架构下，成交确认应由主进程 API -> PositionService 统一落库。
+        该方法仅保留给测试或极简离线场景，不再承载正式确认链路。
+        """
         self.clear_pending_buy(code, qty)
-        self.monitor.add_position(
-            code=code,
-            qty=qty,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            stop_loss_pct=STOP_LOSS_PCT,
-            take_profit_pct=TAKE_PROFIT_PCT,
-            reason=reason,
-        )
-        if self.repository is not None and self.run_id is not None:
-            pos_info = self.monitor.get_position_info(code) or {}
-            self.repository.record_execution(
+        if self.position_service is not None and self.run_id is not None:
+            self.position_service.confirm_position(
                 run_id=self.run_id,
                 code=code,
-                side='BUY',
                 qty=qty,
-                price=entry_price,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
                 reason=reason,
-                position_qty_after=pos_info.get('qty'),
-                avg_entry_after=pos_info.get('entry'),
             )
+        else:
+            stop_loss = stop_loss if stop_loss is not None else round(entry_price * (1 + STOP_LOSS_PCT), 2)
+            take_profit = take_profit if take_profit is not None else round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
+            self.monitor.add_position(
+                code=code,
+                qty=qty,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                stop_loss_pct=STOP_LOSS_PCT,
+                take_profit_pct=TAKE_PROFIT_PCT,
+                reason=reason,
+            )
+            logger.warning("confirm_position() 在无 repository 模式下被调用；该路径仅用于兼容测试。")
+        self.refresh_runtime_state_from_repository(force=True)
         self.sync_runtime_state(force=True)
 
     def confirm_exit(self, code, qty=None, exit_price=None, reason='均线死叉卖出'):
-        """卖出成交确认后移除持仓监控，并清理 pending SELL。"""
-        pos_info = self.monitor.get_position_info(code)
+        """兼容入口。
+
+        正式成交确认统一由主进程 PositionService 处理；这里仅用于兼容测试。
+        """
+        pos_info = self.repository.get_strategy_position(self.run_id, code) if self.repository is not None and self.run_id is not None else self.monitor.get_position_info(code)
         exit_qty = qty if qty is not None else (pos_info['qty'] if pos_info else None)
         self.clear_pending_sell(code, exit_qty)
-        if self.repository is not None and self.run_id is not None:
-            realized_pnl = None
-            if pos_info is not None and exit_price is not None and exit_qty is not None:
-                realized_pnl = round((exit_price - pos_info['entry']) * exit_qty, 4)
-            self.repository.record_execution(
+        if self.position_service is not None and self.run_id is not None:
+            self.position_service.confirm_exit(
                 run_id=self.run_id,
                 code=code,
-                side='SELL',
-                qty=exit_qty or 0,
-                price=exit_price,
+                qty=exit_qty,
+                exit_price=exit_price,
                 reason=reason,
-                position_qty_after=0,
-                avg_entry_after=None,
-                realized_pnl=realized_pnl,
-                metadata={'position_entry': pos_info.get('entry') if pos_info else None},
             )
-        self.monitor.remove_position(code)
+        else:
+            self.monitor.remove_position(code)
+            logger.warning("confirm_exit() 在无 repository 模式下被调用；该路径仅用于兼容测试。")
+        self.refresh_runtime_state_from_repository(force=True)
         self.sync_runtime_state(force=True)
-
-    def process_control_commands(self):
-        """
-        处理外部投递给当前策略进程的控制命令。
-
-        当前主要用于 agent 成交确认后的回调：
-        - confirm_buy
-        - confirm_sell
-        """
-        if self.repository is None or self.run_id is None:
-            return
-        commands = self.repository.fetch_pending_commands(self.run_id)
-        if not commands:
-            return
-
-        for command in commands:
-            action = command.get('action')
-            try:
-                if action == 'confirm_buy':
-                    self.confirm_position(
-                        code=command['code'],
-                        qty=command['qty'],
-                        entry_price=command['entry_price'],
-                        stop_loss=command.get('stop_loss'),
-                        take_profit=command.get('take_profit'),
-                        reason=command.get('reason', '均线金叉买入'),
-                    )
-                    logger.info("✅ 已处理成交确认(BUY): %s qty=%s", command['code'], command['qty'])
-                elif action == 'confirm_sell':
-                    self.confirm_exit(
-                        code=command['code'],
-                        qty=command.get('qty'),
-                        exit_price=command.get('exit_price'),
-                        reason=command.get('reason', '均线死叉卖出'),
-                    )
-                    logger.info("✅ 已处理成交确认(SELL): %s", command['code'])
-                else:
-                    logger.warning("⚠️ 未知控制命令: %s", command)
-                self.repository.mark_command_processed(command['_command_id'])
-            except Exception as exc:
-                logger.exception("❌ 控制命令处理失败，保持 pending 状态: %s error=%s", command, exc)
 
     def start(self):
         logger.info("=" * 50)
@@ -353,7 +332,6 @@ class RealtimeMaStrategyRunner:
 
         try:
             while True:
-                self.process_control_commands()
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("停止策略...")

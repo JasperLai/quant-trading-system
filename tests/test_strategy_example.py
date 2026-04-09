@@ -152,6 +152,8 @@ class StrategyTest(unittest.TestCase):
         cls.single_module = importlib.import_module('backend.strategies.runtime.single_position')
         cls.pyramiding_module = importlib.import_module('backend.strategies.runtime.pyramiding')
         cls.manager_module = importlib.import_module('backend.services.strategy_manager')
+        cls.position_service_module = importlib.import_module('backend.services.position_service')
+        cls.api_module = importlib.import_module('backend.api.app')
         cls.backtest_engine_module = importlib.import_module('backtest.engine')
 
     def setUp(self):
@@ -241,19 +243,26 @@ class StrategyTest(unittest.TestCase):
         self.assertNotIn(code, strategy.pending_sells)
         self.assertEqual([code], strategy.monitor.remove_calls)
 
-    def test_process_control_commands_handles_confirm_buy_and_sell(self):
+    def test_runner_reads_position_and_pending_state_from_repository(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'runtime.sqlite3'
             repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
-            repository.upsert_run(
-                run_id='run-test',
-                strategy_name='single_position_ma',
-                config={},
-                pid=1234,
-                status='running',
+            repository.upsert_run('run-test', 'single_position_ma', {}, 1234, 'running')
+            repository.upsert_strategy_position(
+                'run-test',
+                'HK.00700',
+                {
+                    'qty': 100,
+                    'entry': 20.0,
+                    'stop': 16.0,
+                    'profit': 26.0,
+                    'stop_pct': -0.20,
+                    'profit_pct': 0.30,
+                    'reason': 'test',
+                    'entry_time': '2026-04-08T10:00:00',
+                },
             )
-            repository.enqueue_command('run-test', 'confirm_buy', {'action': 'confirm_buy', 'code': 'HK.00700', 'qty': 100, 'entry_price': 20.0})
-            repository.enqueue_command('run-test', 'confirm_sell', {'action': 'confirm_sell', 'code': 'HK.00700', 'qty': 100, 'exit_price': 21.5})
+            repository.upsert_pending_order('run-test', 'HK.00700', 'SELL', 100)
             strategy = self.single_module.MaCrossStrategy(
                 codes=['HK.00700'],
                 short_ma=5,
@@ -261,43 +270,31 @@ class StrategyTest(unittest.TestCase):
                 run_id='run-test',
                 db_path=str(db_path),
             )
+            strategy.prices['HK.00700'] = [10.0] * 19 + [11.0]
+            strategy.bar_time_keys['HK.00700'] = [f'2026-01-{idx + 1:02d} 00:00:00' for idx in range(20)]
+            strategy.last_short_ma['HK.00700'] = strategy.calculate_ma(strategy.prices['HK.00700'], strategy.short_ma_period)
+            strategy.last_long_ma['HK.00700'] = strategy.calculate_ma(strategy.prices['HK.00700'], strategy.long_ma_period)
 
-            strategy.process_control_commands()
+            strategy.on_quote({'code': 'HK.00700', 'last_price': 1.0})
 
-            self.assertEqual(1, len(strategy.monitor.add_calls))
-            self.assertEqual(['HK.00700'], strategy.monitor.remove_calls)
-            executions = repository.list_executions('run-test')
-            self.assertEqual(2, len(executions))
-            self.assertEqual('BUY', executions[0]['side'])
-            self.assertEqual(20.0, executions[0]['price'])
-            self.assertEqual('SELL', executions[1]['side'])
-            self.assertEqual(21.5, executions[1]['price'])
+            self.assertEqual([], self.fake_signal_sender.calls)
+            self.assertIn('HK.00700', strategy.pending_sells)
 
-    def test_process_control_commands_keeps_failed_command_pending(self):
+    def test_api_confirm_buy_applies_for_running_run(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'runtime.sqlite3'
-            repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
-            repository.upsert_run(
-                run_id='run-fail',
-                strategy_name='single_position_ma',
-                config={},
-                pid=1234,
-                status='running',
-            )
-            repository.enqueue_command('run-fail', 'confirm_buy', {'action': 'confirm_buy', 'code': 'HK.00700', 'qty': 100})
-            strategy = self.single_module.MaCrossStrategy(
-                codes=['HK.00700'],
-                short_ma=5,
-                long_ma=20,
-                run_id='run-fail',
-                db_path=str(db_path),
+            runtime = self.api_module.StrategyRuntime()
+            runtime.repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            runtime.position_service = self.position_service_module.PositionService(runtime.repository)
+            runtime.repository.upsert_run('run-live', 'single_position_ma', {}, 1234, 'running')
+
+            response = runtime.confirm_buy(
+                'run-live',
+                self.api_module.ConfirmBuyRequest(code='HK.00700', qty=100, entryPrice=20.0, reason='manual confirm'),
             )
 
-            strategy.process_control_commands()
-
-            pending = repository.fetch_pending_commands('run-fail')
-            self.assertEqual(1, len(pending))
-            self.assertEqual('HK.00700', pending[0]['code'])
+            self.assertEqual('applied', response['status'])
+            self.assertEqual(1, len(runtime.repository.list_strategy_positions('run-live')))
 
     def test_pyramiding_strategy_respects_max_position(self):
         strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
@@ -430,14 +427,146 @@ class StrategyTest(unittest.TestCase):
             run_id='run-sync',
             db_path=str(ROOT / 'backend' / 'data' / 'test-runtime.sqlite3'),
         )
-        strategy.repository.replace_positions = mock.Mock()
         strategy.repository.replace_pending_orders = mock.Mock()
 
         strategy.sync_runtime_state()
         strategy.sync_runtime_state()
 
-        self.assertEqual(1, strategy.repository.replace_positions.call_count)
         self.assertEqual(1, strategy.repository.replace_pending_orders.call_count)
+
+    def test_position_service_can_confirm_buy_and_sell_without_runtime_process(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            service = self.position_service_module.PositionService(repository)
+            repository.upsert_run('run-position', 'single_position_ma', {}, 1234, 'stopped')
+            repository.upsert_pending_order('run-position', 'HK.00700', 'BUY', 100)
+
+            position = service.confirm_position('run-position', 'HK.00700', 100, 20.0)
+            self.assertEqual(100, position['qty'])
+            self.assertEqual([], repository.list_pending_orders('run-position'))
+            account_positions = repository.list_account_positions('default')
+            self.assertEqual(1, len(account_positions))
+            self.assertEqual(100, account_positions[0]['qty'])
+
+            repository.upsert_pending_order('run-position', 'HK.00700', 'SELL', 100)
+            remaining = service.confirm_exit('run-position', 'HK.00700', qty=100, exit_price=21.0)
+
+            self.assertEqual(0, remaining)
+            self.assertEqual([], repository.list_strategy_positions('run-position'))
+            self.assertEqual([], repository.list_account_positions('default'))
+            self.assertEqual([], repository.list_pending_orders('run-position'))
+            executions = repository.list_executions('run-position')
+            self.assertEqual(['BUY', 'SELL'], [item['side'] for item in executions])
+
+    def test_strategy_runtime_confirm_sell_applies_directly_for_stopped_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            runtime = self.api_module.StrategyRuntime()
+            runtime.repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            runtime.position_service = self.position_service_module.PositionService(runtime.repository)
+            runtime.repository.upsert_run('run-stopped', 'single_position_ma', {}, 1234, 'stopped')
+            runtime.repository.upsert_strategy_position(
+                'run-stopped',
+                'HK.00700',
+                {
+                    'qty': 100,
+                    'entry': 20.0,
+                    'stop': 16.0,
+                    'profit': 26.0,
+                    'stop_pct': -0.20,
+                    'profit_pct': 0.30,
+                    'reason': 'test',
+                    'entry_time': '2026-04-08T10:00:00',
+                },
+            )
+            runtime.repository.upsert_pending_order('run-stopped', 'HK.00700', 'SELL', 100)
+
+            response = runtime.confirm_sell(
+                'run-stopped',
+                self.api_module.ConfirmSellRequest(code='HK.00700', qty=100, exitPrice=21.5, reason='manual confirm'),
+            )
+
+            self.assertEqual('applied', response['status'])
+            self.assertEqual([], runtime.repository.list_strategy_positions('run-stopped'))
+
+    def test_position_service_aggregates_account_positions_across_runs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            service = self.position_service_module.PositionService(repository)
+            repository.upsert_run('run-a', 'single_position_ma', {}, 1234, 'stopped')
+            repository.upsert_run('run-b', 'single_position_ma', {}, 1235, 'stopped')
+
+            service.confirm_position('run-a', 'HK.00700', 100, 20.0)
+            service.confirm_position('run-b', 'HK.00700', 200, 22.0)
+
+            strategy_a = repository.list_strategy_positions('run-a')
+            strategy_b = repository.list_strategy_positions('run-b')
+            account_positions = repository.list_account_positions('default')
+
+            self.assertEqual(100, strategy_a[0]['qty'])
+            self.assertEqual(200, strategy_b[0]['qty'])
+            self.assertEqual(1, len(account_positions))
+            self.assertEqual(300, account_positions[0]['qty'])
+            self.assertAlmostEqual(round((20.0 * 100 + 22.0 * 200) / 300, 4), account_positions[0]['entry'], places=4)
+
+    def test_position_service_can_confirm_account_level_sell_and_allocate_across_runs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            service = self.position_service_module.PositionService(repository)
+            repository.upsert_run('run-a', 'single_position_ma', {}, 1234, 'running')
+            repository.upsert_run('run-b', 'single_position_ma', {}, 1235, 'running')
+
+            service.confirm_position('run-a', 'HK.00700', 100, 20.0)
+            service.confirm_position('run-b', 'HK.00700', 200, 22.0)
+
+            result = service.confirm_account_exit(
+                account_id='default',
+                code='HK.00700',
+                qty=150,
+                exit_price=25.0,
+                reason='guardian stop sell',
+            )
+
+            self.assertEqual(150, result['remainingQty'])
+            self.assertEqual(
+                [
+                    {'run_id': 'run-a', 'qty': 100, 'remainingQty': 0},
+                    {'run_id': 'run-b', 'qty': 50, 'remainingQty': 150},
+                ],
+                result['allocations'],
+            )
+
+            strategy_a = repository.list_strategy_positions('run-a')
+            strategy_b = repository.list_strategy_positions('run-b')
+            account_positions = repository.list_account_positions('default')
+
+            self.assertEqual([], strategy_a)
+            self.assertEqual(150, strategy_b[0]['qty'])
+            self.assertEqual(150, account_positions[0]['qty'])
+            self.assertEqual(['BUY', 'SELL'], [item['side'] for item in repository.list_executions('run-a')])
+            self.assertEqual(['BUY', 'SELL'], [item['side'] for item in repository.list_executions('run-b')])
+
+    def test_api_confirm_account_sell_returns_allocations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'runtime.sqlite3'
+            runtime = self.api_module.StrategyRuntime()
+            runtime.repository = importlib.import_module('backend.repositories.runtime_repository').RuntimeRepository(db_path=db_path)
+            runtime.position_service = self.position_service_module.PositionService(runtime.repository)
+            runtime.repository.upsert_run('run-a', 'single_position_ma', {}, 1234, 'running')
+            runtime.position_service.confirm_position('run-a', 'HK.00700', 100, 20.0)
+
+            response = runtime.confirm_account_sell(
+                'default',
+                self.api_module.ConfirmSellRequest(code='HK.00700', qty=100, exitPrice=21.0, reason='guardian sell'),
+            )
+
+            self.assertEqual('applied', response['status'])
+            self.assertEqual('default', response['accountId'])
+            self.assertEqual(0, response['remainingQty'])
+            self.assertEqual([{'run_id': 'run-a', 'qty': 100, 'remainingQty': 0}], response['allocations'])
 
     def test_backtest_engine_can_exit_on_dead_cross(self):
         signal = self.signal_module.SinglePositionMaSignal(codes=['SZ.000001'], short_ma=2, long_ma=3, order_qty=100)
