@@ -9,7 +9,7 @@
 1. 查询可用策略
 2. 启动策略实例
 3. 读取运行状态、日志和数据库快照
-4. 在买卖成交后回调确认接口
+4. 通过后端交易接口下单
 
 ## 2. 基本说明
 
@@ -66,7 +66,7 @@ agent 应按其中的 `execution` 字段执行：
 
 每次启动策略都会生成唯一 `run_id`。
 
-后续日志读取、停止策略、成交确认、状态查询都依赖它。
+后续日志读取、停止策略、状态查询都依赖它。
 
 ## 3. 接口总览
 
@@ -79,9 +79,11 @@ agent 应按其中的 `execution` 字段执行：
 | `POST` | `/api/runs/{run_id}/stop` | 停止策略 |
 | `GET` | `/api/runs/{run_id}/logs` | 获取策略日志 |
 | `GET` | `/api/runs/{run_id}/state` | 获取数据库状态快照 |
-| `POST` | `/api/runs/{run_id}/confirm-buy` | 买入成交确认 |
-| `POST` | `/api/runs/{run_id}/confirm-sell` | 卖出成交确认 |
-| `POST` | `/api/accounts/{account_id}/confirm-sell` | 账户级卖出成交确认 |
+| `POST` | `/api/trading/orders` | 下单接口（agent 主入口） |
+| `GET` | `/api/trading/orders` | 查询订单 |
+| `POST` | `/api/runs/{run_id}/confirm-buy` | 手工补录买入成交 |
+| `POST` | `/api/runs/{run_id}/confirm-sell` | 手工补录卖出成交 |
+| `POST` | `/api/accounts/{account_id}/confirm-sell` | 手工补录账户级卖出成交 |
 
 ## 4. 健康检查
 
@@ -264,7 +266,14 @@ POST /api/runs/{run_id}/stop
 
 停止策略只会停止该策略子进程，不会清空数据库中的已确认持仓。账户级仓位仍由 `PositionGuardian` 继续监控。
 
-## 11. 买入成交确认
+## 11. 手工补录买入成交
+
+默认情况下，agent 不应调用本接口。
+
+仅当以下场景出现时才使用：
+- broker 实际已成交，但自动结算链路未能正常落账
+- 需要手工补录历史成交
+- 调试或运维补偿
 
 ```http
 POST /api/runs/{run_id}/confirm-buy
@@ -308,13 +317,11 @@ Content-Type: application/json
 }
 ```
 
-处理语义：
+## 12. 手工补录卖出成交
 
-- 这是同步落账接口
-- 后端收到请求后立即更新数据库
-- 不再通过命令表转发给策略子进程
+默认情况下，agent 不应调用本接口。
 
-## 12. 卖出成交确认
+仅用于自动结算失败后的人工补偿。
 
 ```http
 POST /api/runs/{run_id}/confirm-sell
@@ -359,12 +366,9 @@ Content-Type: application/json
 4. 轮询：
    - `GET /api/runs/{run_id}/logs`
    - `GET /api/runs/{run_id}/state`
-5. 收到策略 `BUY` 意图并买入成功后：
-   - 调 `POST /api/runs/{run_id}/confirm-buy`
-6. 收到策略 `SELL` 意图并卖出成功后：
-   - 调 `POST /api/runs/{run_id}/confirm-sell`
-7. 收到 guardian 风控意图并卖出成功后：
-   - 调 `POST /api/accounts/{account_id}/confirm-sell`
+5. 收到策略或 guardian 信号后，只调用 `signal_payload.execution.api`
+6. 下单后等待后端基于 broker 订单/成交回报自动落账
+7. 只有自动结算失败时，才使用手工补录接口
 
 ## 14. 当前实现说明
 
@@ -373,9 +377,11 @@ Content-Type: application/json
 3. `PositionGuardian` 基于 `account_positions` 做账户级固定止损止盈兜底。
 4. guardian 风控卖出不绑定单一 `run_id`，应使用账户级确认接口。
 
-## 15. 账户级卖出成交确认
+## 15. 手工补录账户级卖出成交
 
-当卖出信号来自 guardian 时，agent 不应调用 `/api/runs/{run_id}/confirm-sell`，而应调用账户级确认接口。
+默认情况下，agent 不应调用本接口。
+
+当账户级自动结算失败，且需要对 guardian 卖出做人工补录时，使用本接口。
 
 ```http
 POST /api/accounts/{account_id}/confirm-sell

@@ -18,7 +18,7 @@ class PositionService:
             return
 
         remaining_qty = round(float(pending['qty']) - float(filled_qty), 6)
-        if remaining_qty > 0:
+        if remaining_qty > 1e-6:
             self.repository.upsert_pending_order(run_id, code, side, remaining_qty, commit=False)
         else:
             self.repository.remove_pending_order(run_id, code, side, commit=False)
@@ -32,7 +32,9 @@ class PositionService:
         stop_loss=None,
         take_profit=None,
         reason='均线金叉买入',
+        account_id=None,
     ):
+        account_id = account_id or self.account_id
         with self.repository.transaction():
             existing = self.repository.get_strategy_position(run_id, code)
             if existing is None:
@@ -55,7 +57,7 @@ class PositionService:
                 'entry_time': entry_time,
             }
             self.repository.upsert_strategy_position(run_id, code, position, commit=False)
-            self._apply_account_buy(code, qty, entry_price, commit=False)
+            self._apply_account_buy(account_id, code, qty, entry_price, commit=False)
             self._consume_pending_order(run_id, code, 'BUY', qty)
             self.repository.record_execution(
                 run_id=run_id,
@@ -70,7 +72,8 @@ class PositionService:
             )
             return position
 
-    def confirm_exit(self, run_id, code, qty=None, exit_price=None, reason='均线死叉卖出'):
+    def confirm_exit(self, run_id, code, qty=None, exit_price=None, reason='均线死叉卖出', account_id=None):
+        account_id = account_id or self.account_id
         with self.repository.transaction():
             existing = self.repository.get_strategy_position(run_id, code)
             if existing is None:
@@ -105,7 +108,7 @@ class PositionService:
                 position_qty_after = 0
                 avg_entry_after = None
 
-            self._apply_account_sell(code, exit_qty, exit_price, commit=False)
+            self._apply_account_sell(account_id, code, exit_qty, exit_price, commit=False)
 
             self._consume_pending_order(run_id, code, 'SELL', exit_qty)
             self.repository.record_execution(
@@ -193,7 +196,7 @@ class PositionService:
                 remaining_to_allocate -= allocated_qty
 
             applied_exit_qty = exit_qty - remaining_to_allocate
-            self._apply_account_sell(code, applied_exit_qty, exit_price, commit=False)
+            self._apply_account_sell(account_id, code, applied_exit_qty, exit_price, commit=False)
 
             remaining_account = self.repository.get_account_position(account_id, code)
             return {
@@ -201,8 +204,8 @@ class PositionService:
                 'allocations': allocations,
             }
 
-    def _apply_account_buy(self, code, qty, entry_price, commit=True):
-        existing = self.repository.get_account_position(self.account_id, code)
+    def _apply_account_buy(self, account_id, code, qty, entry_price, commit=True):
+        existing = self.repository.get_account_position(account_id, code)
         if existing is None:
             total_qty = qty
             avg_entry = entry_price
@@ -218,15 +221,15 @@ class PositionService:
             'stop_pct': STOP_LOSS_PCT,
             'profit_pct': TAKE_PROFIT_PCT,
         }
-        self.repository.upsert_account_position(self.account_id, code, position, commit=commit)
+        self.repository.upsert_account_position(account_id, code, position, commit=commit)
 
-    def _apply_account_sell(self, code, qty, exit_price=None, commit=True):
-        existing = self.repository.get_account_position(self.account_id, code)
+    def _apply_account_sell(self, account_id, code, qty, exit_price=None, commit=True):
+        existing = self.repository.get_account_position(account_id, code)
         if existing is None:
             return
         remaining_qty = max(existing['qty'] - qty, 0)
         if remaining_qty == 0:
-            self.repository.delete_account_position(self.account_id, code, commit=commit)
+            self.repository.delete_account_position(account_id, code, commit=commit)
             return
 
         position = {
@@ -237,4 +240,4 @@ class PositionService:
             'stop_pct': existing['stop_pct'],
             'profit_pct': existing['profit_pct'],
         }
-        self.repository.upsert_account_position(self.account_id, code, position, commit=commit)
+        self.repository.upsert_account_position(account_id, code, position, commit=commit)

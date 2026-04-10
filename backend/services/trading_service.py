@@ -139,6 +139,7 @@ class TradingService:
                 qty=delta_qty,
                 entry_price=dealt_avg_price,
                 reason=note,
+                account_id=stored.get('account_id') or DEFAULT_ACCOUNT_ID,
             )
             self.repository.mark_trade_order_settled(broker_order_id, dealt_qty, settlement_status='SETTLED')
             return
@@ -161,6 +162,7 @@ class TradingService:
                     qty=delta_qty,
                     exit_price=dealt_avg_price,
                     reason=note,
+                    account_id=stored.get('account_id') or DEFAULT_ACCOUNT_ID,
                 )
                 self.repository.mark_trade_order_settled(broker_order_id, dealt_qty, settlement_status='SETTLED')
                 return
@@ -201,6 +203,7 @@ class TradingService:
                 qty=deal_qty,
                 entry_price=deal_price,
                 reason=note,
+                account_id=stored.get('account_id') or DEFAULT_ACCOUNT_ID,
             )
         elif side == 'SELL':
             if source == 'guardian':
@@ -218,6 +221,7 @@ class TradingService:
                     qty=deal_qty,
                     exit_price=deal_price,
                     reason=note,
+                    account_id=stored.get('account_id') or DEFAULT_ACCOUNT_ID,
                 )
 
         new_settled_qty = float(stored.get('settled_qty') or 0) + deal_qty
