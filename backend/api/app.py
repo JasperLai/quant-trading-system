@@ -21,6 +21,7 @@ from backend.monitoring.guardian import PositionGuardian
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
 from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
+from backend.services.trading_service import TradingService
 
 ROOT = Path(__file__).resolve().parents[2]
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -87,6 +88,19 @@ class ConfirmSellRequest(BaseModel):
     reason: Optional[str] = '均线死叉卖出'
 
 
+class PlaceOrderRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    code: str
+    qty: int
+    price: float
+    side: str = 'BUY'
+    market: str = 'HK'
+    trade_env: str = Field('SIMULATE', alias='tradeEnv')
+    order_type: str = Field('NORMAL', alias='orderType')
+    acc_id: Optional[int] = Field(None, alias='accId')
+
+
 class BacktestValidationRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -110,6 +124,7 @@ class StrategyRuntime:
         self.manager = StrategyManager()
         self.repository = RuntimeRepository(db_path=DB_PATH)
         self.position_service = PositionService(self.repository)
+        self.trading_service = TradingService()
         self.runs: Dict[str, StrategyRun] = {}
         self.lock = threading.Lock()
 
@@ -296,6 +311,27 @@ class StrategyRuntime:
         updated = self.repository.get_run(run_id)
         return updated or db_run
 
+    def delete_run(self, run_id: str):
+        db_run = self.repository.get_run(run_id)
+        if db_run is None:
+            raise HTTPException(status_code=404, detail='Run not found')
+        if db_run.get('status') == 'running':
+            raise HTTPException(status_code=409, detail='Please stop the run before deleting it')
+
+        raw_log_path = db_run.get('logPath')
+        self.repository.delete_run(run_id)
+        with self.lock:
+            self.runs.pop(run_id, None)
+        if raw_log_path:
+            log_path = Path(raw_log_path)
+            if log_path.exists():
+                try:
+                    log_path.unlink()
+                except OSError:
+                    logger.warning("删除实例日志文件失败: run_id=%s path=%s", run_id, raw_log_path)
+        logger.info("删除策略实例: run_id=%s", run_id)
+        return {'status': 'deleted', 'runId': run_id}
+
     def confirm_buy(self, run_id: str, request: ConfirmBuyRequest):
         db_run = self.repository.get_run(run_id)
         if db_run is None:
@@ -378,6 +414,27 @@ class StrategyRuntime:
             args.end,
         )
         return run_replay_validation(args)
+
+    def list_trade_accounts(self, market: str = 'HK'):
+        try:
+            return self.trading_service.list_accounts(market=market)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    def place_trade_order(self, request: PlaceOrderRequest):
+        try:
+            return self.trading_service.place_order(
+                code=request.code,
+                qty=request.qty,
+                price=request.price,
+                side=request.side,
+                market=request.market,
+                trd_env=request.trade_env,
+                order_type=request.order_type,
+                acc_id=request.acc_id,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     def read_logs(self, run_id: str, lines: int = 200):
         with self.lock:
@@ -483,6 +540,11 @@ def stop_run(run_id: str):
     return runtime.stop_run(run_id)
 
 
+@app.delete('/api/runs/{run_id}')
+def delete_run(run_id: str):
+    return runtime.delete_run(run_id)
+
+
 @app.get('/api/runs/{run_id}/logs')
 def read_logs(run_id: str, lines: int = 200):
     return {'lines': runtime.read_logs(run_id, lines)}
@@ -506,3 +568,13 @@ def confirm_account_sell(account_id: str, request: ConfirmSellRequest):
 @app.post('/api/backtests/replay-validation')
 def run_backtest_validation(request: BacktestValidationRequest):
     return runtime.run_backtest_validation(request)
+
+
+@app.get('/api/trading/accounts')
+def list_trade_accounts(market: str = 'HK'):
+    return runtime.list_trade_accounts(market=market)
+
+
+@app.post('/api/trading/orders')
+def place_trade_order(request: PlaceOrderRequest):
+    return runtime.place_trade_order(request)

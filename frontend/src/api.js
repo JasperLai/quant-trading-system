@@ -32,5 +32,9 @@ export const api = {
     fetchJson(`/api/runs/${id}/stop`, {
       method: 'POST',
     }),
+  deleteRun: (id) =>
+    fetchJson(`/api/runs/${id}`, {
+      method: 'DELETE',
+    }),
   readLogs: (id) => fetchJson(`/api/runs/${id}/logs?lines=200`),
 };

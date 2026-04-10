@@ -4,6 +4,7 @@ import {
   Card,
   Col,
   Divider,
+  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -17,6 +18,7 @@ import {
   Typography,
   message,
 } from 'antd';
+import { MoreOutlined } from '@ant-design/icons';
 import { api } from './api';
 
 function statusColor(status) {
@@ -68,6 +70,18 @@ export default function StrategyRunsPage() {
   }, []);
 
   useEffect(() => {
+    if (!logModal.open || !logModal.runId) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      handleLogs(logModal.runId, false);
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [logModal.open, logModal.runId]);
+
+  useEffect(() => {
     if (!selectedStrategy) return;
     form.setFieldsValue({
       codes: (selectedStrategy.params.codes || []).join(','),
@@ -107,9 +121,33 @@ export default function StrategyRunsPage() {
     loadRuns();
   }
 
-  async function handleLogs(runId) {
+  async function handleLogs(runId, openModal = true) {
     const result = await api.readLogs(runId);
-    setLogModal({ open: true, lines: result.lines || [], runId });
+    setLogModal((current) => ({
+      open: openModal ? true : current.open,
+      lines: result.lines || [],
+      runId,
+    }));
+  }
+
+  async function handleDelete(runId) {
+    await api.deleteRun(runId);
+    message.success('策略实例已删除');
+    loadRuns();
+  }
+
+  function openDeleteConfirm(record) {
+    Modal.confirm({
+      title: '删除策略实例',
+      content:
+        record.status === 'running'
+          ? '请先停止该实例，再执行删除。'
+          : `确认删除实例 ${record.id} 吗？删除后将移除该实例记录和对应日志文件。`,
+      okText: record.status === 'running' ? '知道了' : '删除',
+      okButtonProps: record.status === 'running' ? { danger: false } : { danger: true },
+      cancelText: record.status === 'running' ? null : '取消',
+      onOk: record.status === 'running' ? undefined : () => handleDelete(record.id),
+    });
   }
 
   const columns = [
@@ -121,7 +159,6 @@ export default function StrategyRunsPage() {
       key: 'status',
       render: (value) => <Tag color={statusColor(value)}>{value}</Tag>,
     },
-    { title: 'PID', dataIndex: 'pid', key: 'pid' },
     {
       title: '标的',
       key: 'codes',
@@ -130,14 +167,40 @@ export default function StrategyRunsPage() {
     {
       title: '操作',
       key: 'actions',
-      render: (_, record) => (
-        <Space>
-          <Button onClick={() => handleLogs(record.id)}>日志</Button>
-          <Button danger disabled={record.status !== 'running'} onClick={() => handleStop(record.id)}>
-            停止
-          </Button>
-        </Space>
-      ),
+      width: 96,
+      render: (_, record) => {
+        const items = [
+          {
+            key: 'logs',
+            label: '查看日志',
+          },
+          {
+            key: 'stop',
+            label: '停止实例',
+            disabled: record.status !== 'running',
+          },
+          {
+            key: 'delete',
+            label: <span style={{ color: '#cf1322' }}>删除实例</span>,
+          },
+        ];
+
+        return (
+          <Dropdown
+            menu={{
+              items,
+              onClick: ({ key }) => {
+                if (key === 'logs') handleLogs(record.id);
+                if (key === 'stop') handleStop(record.id);
+                if (key === 'delete') openDeleteConfirm(record);
+              },
+            }}
+            trigger={['click']}
+          >
+            <Button icon={<MoreOutlined />}>操作</Button>
+          </Dropdown>
+        );
+      },
     },
   ];
 

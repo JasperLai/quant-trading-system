@@ -144,6 +144,15 @@ class RuntimeRepository:
             rows = self.conn.execute('SELECT * FROM strategy_runs ORDER BY created_at DESC').fetchall()
         return [self._row_to_run(row) for row in rows]
 
+    def delete_run(self, run_id, commit=True):
+        with self.lock:
+            self.conn.execute('DELETE FROM pending_orders WHERE run_id=?', (run_id,))
+            self.conn.execute('DELETE FROM strategy_positions WHERE run_id=?', (run_id,))
+            self.conn.execute('DELETE FROM executions WHERE run_id=?', (run_id,))
+            self.conn.execute('DELETE FROM strategy_runs WHERE run_id=?', (run_id,))
+            if commit:
+                self.conn.commit()
+
     def replace_pending_orders(self, run_id, pending_orders, commit=True):
         now = time.time()
         with self.lock:

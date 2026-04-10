@@ -10,6 +10,7 @@ const { Header, Sider, Content } = Layout;
 
 export default function App() {
   const location = useLocation();
+  const [collapsed, setCollapsed] = useState(false);
   const [systemStatus, setSystemStatus] = useState({
     openD: { connected: false, quoteLogin: false, detail: 'loading' },
   });
@@ -91,15 +92,18 @@ export default function App() {
       }}
     >
       <Layout className="app-shell">
-        <Sider width={256} className="sidebar">
+        <Sider
+          width={256}
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          className="sidebar"
+        >
           <div className="brand">
-            <div className="brand-badge">ANTD 风格 · 卡通版</div>
+            {!collapsed ? <div className="brand-badge">ANTD 风格 · 卡通版</div> : null}
             <Typography.Title level={3} className="brand-title">
-              量化策略星球
+              {collapsed ? '量化' : '量化策略星球'}
             </Typography.Title>
-            <Typography.Paragraph className="brand-subtitle">
-              用更轻松的界面管理 Python 策略、运行实例和实时日志。
-            </Typography.Paragraph>
           </div>
           <Menu
             className="nav-menu"
