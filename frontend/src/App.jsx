@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { DesktopOutlined, LineChartOutlined } from '@ant-design/icons';
+import { DesktopOutlined, LineChartOutlined, OrderedListOutlined } from '@ant-design/icons';
 import { ConfigProvider, Layout, Menu, Tag, Typography } from 'antd';
 import { Link, Route, Routes, useLocation } from 'react-router-dom';
 import { api } from './api';
 import BacktestPage from './BacktestPage';
 import StrategyRunsPage from './StrategyRunsPage';
+import TradingDetailsPage from './TradingDetailsPage';
 
 const { Header, Sider, Content } = Layout;
 
@@ -120,6 +121,11 @@ export default function App() {
                 icon: <LineChartOutlined />,
                 label: <Link to="/backtests">回测验证</Link>,
               },
+              {
+                key: '/trades',
+                icon: <OrderedListOutlined />,
+                label: <Link to="/trades">交易明细</Link>,
+              },
             ]}
           />
         </Sider>
@@ -141,6 +147,7 @@ export default function App() {
               <Route path="/strategies" element={<StrategyRunsPage />} />
               <Route path="/runs" element={<StrategyRunsPage />} />
               <Route path="/backtests" element={<BacktestPage />} />
+              <Route path="/trades" element={<TradingDetailsPage />} />
             </Routes>
           </Content>
         </Layout>

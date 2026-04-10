@@ -325,6 +325,55 @@ class TradingService:
         finally:
             gateway.close()
 
+    def list_deals(self, market='HK', trd_env='SIMULATE', acc_id=None, code=None, refresh=True, limit=200):
+        market = self.normalize_market(market, code=code)
+        gateway = self._make_gateway(market)
+        rows = []
+        try:
+            if acc_id is None:
+                ret, acc_list = gateway.get_acc_list()
+                if ret != RET_OK:
+                    raise RuntimeError(str(acc_list))
+                rows = self._rows_to_dicts(acc_list)
+                target = next(
+                    (item for item in rows if str(item.get('trd_env', '')).upper() == trd_env.upper()),
+                    None,
+                )
+                if target is None:
+                    raise RuntimeError(f'No account found for env={trd_env}')
+                acc_id = target['acc_id']
+
+            if refresh:
+                ret, data = gateway.deal_list_query(
+                    trd_env=TRD_ENV_MAP[trd_env.upper()],
+                    acc_id=acc_id,
+                    code=code,
+                )
+                if ret != RET_OK:
+                    # Futu 模拟环境不支持成交列表查询，前端刷新时回退到本地已审计成交。
+                    if trd_env.upper() == 'SIMULATE' and '不支持成交数据' in str(data):
+                        data = []
+                    else:
+                        raise RuntimeError(str(data))
+                rows = self._rows_to_dicts(data)
+                for row in rows:
+                    enriched = dict(row)
+                    enriched['market'] = market
+                    enriched['trade_env'] = trd_env.upper()
+                    enriched['account_id'] = acc_id
+                    self.repository.upsert_trade_deal(enriched)
+
+            if self.repository is None:
+                return rows
+            return self.repository.list_trade_deals(
+                account_id=acc_id,
+                code=code,
+                trade_env=trd_env.upper(),
+                limit=limit,
+            )
+        finally:
+            gateway.close()
+
     def place_order(
         self,
         code: str,

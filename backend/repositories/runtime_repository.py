@@ -667,6 +667,32 @@ class RuntimeRepository:
             result.append(item)
         return result
 
+    def list_trade_deals(self, account_id=None, code=None, trade_env=None, limit=200):
+        query = 'SELECT * FROM trade_deals WHERE 1=1'
+        params = []
+        if account_id is not None:
+            query += ' AND account_id=?'
+            params.append(str(account_id))
+        if code:
+            query += ' AND code=?'
+            params.append(code)
+        if trade_env:
+            query += ' AND trade_env=?'
+            params.append(trade_env)
+        query += ' ORDER BY recorded_at DESC LIMIT ?'
+        params.append(limit)
+
+        with self.lock:
+            rows = self.conn.execute(query, tuple(params)).fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            item['raw'] = json.loads(item['raw_json']) if item.get('raw_json') else None
+            item.pop('raw_json', None)
+            result.append(item)
+        return result
+
     def list_unsettled_trade_orders(self, limit=200):
         active_statuses = (
             'SUBMITTING',

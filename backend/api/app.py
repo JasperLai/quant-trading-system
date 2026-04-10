@@ -471,6 +471,19 @@ class StrategyRuntime:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    def list_trade_deals(self, market='HK', trade_env='SIMULATE', acc_id=None, code=None, refresh=True, limit=200):
+        try:
+            return self.trading_service.list_deals(
+                market=market,
+                trd_env=trade_env,
+                acc_id=acc_id,
+                code=code,
+                refresh=refresh,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     def read_logs(self, run_id: str, lines: int = 200):
         with self.lock:
             run = self.runs.get(run_id)
@@ -649,6 +662,25 @@ def list_trade_orders(
     limit: int = 200,
 ):
     return runtime.list_trade_orders(
+        market=market,
+        trade_env=trade_env,
+        acc_id=acc_id,
+        code=code,
+        refresh=refresh,
+        limit=limit,
+    )
+
+
+@app.get('/api/trading/deals')
+def list_trade_deals(
+    market: str = 'HK',
+    trade_env: str = 'SIMULATE',
+    acc_id: Optional[int] = None,
+    code: Optional[str] = None,
+    refresh: bool = True,
+    limit: int = 200,
+):
+    return runtime.list_trade_deals(
         market=market,
         trade_env=trade_env,
         acc_id=acc_id,

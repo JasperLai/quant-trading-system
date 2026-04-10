@@ -28,6 +28,9 @@ class FutuTradeGateway:
     def order_list_query(self, **kwargs):
         return self.trade_ctx.order_list_query(**kwargs)
 
+    def deal_list_query(self, **kwargs):
+        return self.trade_ctx.deal_list_query(**kwargs)
+
     def place_order(self, **kwargs):
         return self.trade_ctx.place_order(**kwargs)
 
