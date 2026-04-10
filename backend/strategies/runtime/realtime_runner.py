@@ -166,12 +166,30 @@ class RealtimeMaStrategyRunner:
 
     def on_buy_signal(self, code, price, qty):
         logger.info("🟢 金叉信号！买入 %s @ %s", code, price)
-        send_signal(code, 'BUY', price, qty, '均线金叉买入')
+        send_signal(
+            code,
+            'BUY',
+            price,
+            qty,
+            '均线金叉买入',
+            run_id=self.run_id,
+            source='strategy',
+            trade_env='SIMULATE',
+        )
         logger.info("🟡 买入待确认: %s，等待 agent 成交后登记持仓", code)
 
     def on_sell_signal(self, code, price, qty):
         logger.info("🔴 死叉信号！卖出 %s @ %s", code, price)
-        send_signal(code, 'SELL', price, qty, '均线死叉卖出')
+        send_signal(
+            code,
+            'SELL',
+            price,
+            qty,
+            '均线死叉卖出',
+            run_id=self.run_id,
+            source='strategy',
+            trade_env='SIMULATE',
+        )
         logger.info("🟠 卖出待确认: %s，等待 agent 成交后移除持仓", code)
 
     def on_quote(self, quote_data):

@@ -49,6 +49,23 @@ agent 实际成交后，需要显式回调：
 - `pending_orders`
 - `executions`
 
+#### 交易信号协议
+
+策略或 guardian 发给 agent 的消息中，会携带一段 `signal_payload=...` JSON。
+
+agent 应按其中的两个字段执行：
+
+- `execution`
+  表示应该调用的下单 API 和对应 payload
+- `confirmation`
+  表示订单成交后必须调用的确认 API 和对应 payload
+
+要求：
+
+1. 不要直接绕过后端调用 FUTU API
+2. 先调用 `execution.api` 下单
+3. 订单成交后，再调用 `confirmation.api` 回写系统状态
+
 #### run_id
 
 每次启动策略都会生成唯一 `run_id`。

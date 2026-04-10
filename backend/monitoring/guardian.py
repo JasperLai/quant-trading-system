@@ -168,7 +168,10 @@ class PositionGuardian:
                 'SELL',
                 price,
                 position['qty'],
-                f"{reason} | source=guardian | account_id={position['account_id']} | confirm_api=/api/accounts/{position['account_id']}/confirm-sell",
+                reason,
+                account_id=position['account_id'],
+                source='guardian',
+                trade_env='SIMULATE',
             )
             logger.warning(
                 "PositionGuardian triggered SELL: account_id=%s code=%s price=%s reason=%s",

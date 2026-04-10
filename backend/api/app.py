@@ -99,6 +99,9 @@ class PlaceOrderRequest(BaseModel):
     trade_env: str = Field('SIMULATE', alias='tradeEnv')
     order_type: str = Field('NORMAL', alias='orderType')
     acc_id: Optional[int] = Field(None, alias='accId')
+    run_id: Optional[str] = Field(None, alias='runId')
+    source: str = 'manual'
+    note: Optional[str] = None
 
 
 class BacktestValidationRequest(BaseModel):
@@ -124,7 +127,7 @@ class StrategyRuntime:
         self.manager = StrategyManager()
         self.repository = RuntimeRepository(db_path=DB_PATH)
         self.position_service = PositionService(self.repository)
-        self.trading_service = TradingService()
+        self.trading_service = TradingService(repository=self.repository)
         self.runs: Dict[str, StrategyRun] = {}
         self.lock = threading.Lock()
 
@@ -432,6 +435,22 @@ class StrategyRuntime:
                 trd_env=request.trade_env,
                 order_type=request.order_type,
                 acc_id=request.acc_id,
+                run_id=request.run_id,
+                source=request.source,
+                note=request.note,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    def list_trade_orders(self, market='HK', trade_env='SIMULATE', acc_id=None, code=None, refresh=True, limit=200):
+        try:
+            return self.trading_service.list_orders(
+                market=market,
+                trd_env=trade_env,
+                acc_id=acc_id,
+                code=code,
+                refresh=refresh,
+                limit=limit,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -578,3 +597,22 @@ def list_trade_accounts(market: str = 'HK'):
 @app.post('/api/trading/orders')
 def place_trade_order(request: PlaceOrderRequest):
     return runtime.place_trade_order(request)
+
+
+@app.get('/api/trading/orders')
+def list_trade_orders(
+    market: str = 'HK',
+    trade_env: str = 'SIMULATE',
+    acc_id: Optional[int] = None,
+    code: Optional[str] = None,
+    refresh: bool = True,
+    limit: int = 200,
+):
+    return runtime.list_trade_orders(
+        market=market,
+        trade_env=trade_env,
+        acc_id=acc_id,
+        code=code,
+        refresh=refresh,
+        limit=limit,
+    )

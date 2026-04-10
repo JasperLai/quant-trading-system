@@ -89,6 +89,40 @@ class RuntimeRepository:
                     executed_at REAL NOT NULL,
                     FOREIGN KEY(run_id) REFERENCES strategy_runs(run_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS trade_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    broker_order_id TEXT NOT NULL UNIQUE,
+                    run_id TEXT,
+                    account_id TEXT,
+                    market TEXT NOT NULL,
+                    trade_env TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    stock_name TEXT,
+                    trd_side TEXT NOT NULL,
+                    order_type TEXT NOT NULL,
+                    order_status TEXT NOT NULL,
+                    price REAL,
+                    qty REAL NOT NULL,
+                    dealt_qty REAL,
+                    dealt_avg_price REAL,
+                    create_time TEXT,
+                    updated_time TEXT,
+                    currency TEXT,
+                    last_err_msg TEXT,
+                    remark TEXT,
+                    time_in_force TEXT,
+                    fill_outside_rth TEXT,
+                    session TEXT,
+                    aux_price TEXT,
+                    trail_type TEXT,
+                    trail_value TEXT,
+                    trail_spread TEXT,
+                    source TEXT,
+                    note TEXT,
+                    raw_json TEXT,
+                    recorded_at REAL NOT NULL
+                );
                 '''
             )
             self.conn.commit()
@@ -396,6 +430,111 @@ class RuntimeRepository:
             else:
                 item['metadata'] = None
             item.pop('metadata_json', None)
+            result.append(item)
+        return result
+
+    def upsert_trade_order(self, order, commit=True):
+        recorded_at = time.time()
+        raw_json = json.dumps(order, ensure_ascii=False)
+        with self.lock:
+            self.conn.execute(
+                '''
+                INSERT INTO trade_orders (
+                    broker_order_id, run_id, account_id, market, trade_env, code, stock_name,
+                    trd_side, order_type, order_status, price, qty, dealt_qty, dealt_avg_price,
+                    create_time, updated_time, currency, last_err_msg, remark, time_in_force,
+                    fill_outside_rth, session, aux_price, trail_type, trail_value, trail_spread,
+                    source, note, raw_json, recorded_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(broker_order_id) DO UPDATE SET
+                    run_id=excluded.run_id,
+                    account_id=excluded.account_id,
+                    market=excluded.market,
+                    trade_env=excluded.trade_env,
+                    code=excluded.code,
+                    stock_name=excluded.stock_name,
+                    trd_side=excluded.trd_side,
+                    order_type=excluded.order_type,
+                    order_status=excluded.order_status,
+                    price=excluded.price,
+                    qty=excluded.qty,
+                    dealt_qty=excluded.dealt_qty,
+                    dealt_avg_price=excluded.dealt_avg_price,
+                    create_time=excluded.create_time,
+                    updated_time=excluded.updated_time,
+                    currency=excluded.currency,
+                    last_err_msg=excluded.last_err_msg,
+                    remark=excluded.remark,
+                    time_in_force=excluded.time_in_force,
+                    fill_outside_rth=excluded.fill_outside_rth,
+                    session=excluded.session,
+                    aux_price=excluded.aux_price,
+                    trail_type=excluded.trail_type,
+                    trail_value=excluded.trail_value,
+                    trail_spread=excluded.trail_spread,
+                    source=excluded.source,
+                    note=excluded.note,
+                    raw_json=excluded.raw_json,
+                    recorded_at=excluded.recorded_at
+                ''',
+                (
+                    str(order.get('broker_order_id')),
+                    order.get('run_id'),
+                    str(order.get('account_id')) if order.get('account_id') is not None else None,
+                    order.get('market'),
+                    order.get('trade_env'),
+                    order.get('code'),
+                    order.get('stock_name'),
+                    order.get('trd_side'),
+                    order.get('order_type'),
+                    order.get('order_status'),
+                    order.get('price'),
+                    order.get('qty'),
+                    order.get('dealt_qty'),
+                    order.get('dealt_avg_price'),
+                    order.get('create_time'),
+                    order.get('updated_time'),
+                    order.get('currency'),
+                    order.get('last_err_msg'),
+                    order.get('remark'),
+                    order.get('time_in_force'),
+                    order.get('fill_outside_rth'),
+                    order.get('session'),
+                    str(order.get('aux_price')) if order.get('aux_price') is not None else None,
+                    str(order.get('trail_type')) if order.get('trail_type') is not None else None,
+                    str(order.get('trail_value')) if order.get('trail_value') is not None else None,
+                    str(order.get('trail_spread')) if order.get('trail_spread') is not None else None,
+                    order.get('source'),
+                    order.get('note'),
+                    raw_json,
+                    recorded_at,
+                ),
+            )
+            if commit:
+                self.conn.commit()
+
+    def list_trade_orders(self, account_id=None, code=None, trade_env=None, limit=200):
+        query = 'SELECT * FROM trade_orders WHERE 1=1'
+        params = []
+        if account_id is not None:
+            query += ' AND account_id=?'
+            params.append(str(account_id))
+        if code is not None:
+            query += ' AND code=?'
+            params.append(code)
+        if trade_env is not None:
+            query += ' AND trade_env=?'
+            params.append(trade_env)
+        query += ' ORDER BY COALESCE(updated_time, create_time) DESC, id DESC LIMIT ?'
+        params.append(limit)
+        with self.lock:
+            rows = self.conn.execute(query, tuple(params)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item['raw'] = json.loads(item['raw_json']) if item.get('raw_json') else None
+            item.pop('raw_json', None)
             result.append(item)
         return result
 
