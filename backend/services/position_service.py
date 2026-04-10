@@ -12,6 +12,17 @@ class PositionService:
         self.repository = repository
         self.account_id = DEFAULT_ACCOUNT_ID
 
+    def _consume_pending_order(self, run_id, code, side, filled_qty):
+        pending = self.repository.get_pending_order(run_id, code, side)
+        if pending is None:
+            return
+
+        remaining_qty = round(float(pending['qty']) - float(filled_qty), 6)
+        if remaining_qty > 0:
+            self.repository.upsert_pending_order(run_id, code, side, remaining_qty, commit=False)
+        else:
+            self.repository.remove_pending_order(run_id, code, side, commit=False)
+
     def confirm_position(
         self,
         run_id,
@@ -45,7 +56,7 @@ class PositionService:
             }
             self.repository.upsert_strategy_position(run_id, code, position, commit=False)
             self._apply_account_buy(code, qty, entry_price, commit=False)
-            self.repository.remove_pending_order(run_id, code, 'BUY', commit=False)
+            self._consume_pending_order(run_id, code, 'BUY', qty)
             self.repository.record_execution(
                 run_id=run_id,
                 code=code,
@@ -63,7 +74,10 @@ class PositionService:
         with self.repository.transaction():
             existing = self.repository.get_strategy_position(run_id, code)
             if existing is None:
-                self.repository.remove_pending_order(run_id, code, 'SELL', commit=False)
+                if qty is not None:
+                    self._consume_pending_order(run_id, code, 'SELL', qty)
+                else:
+                    self.repository.remove_pending_order(run_id, code, 'SELL', commit=False)
                 return None
 
             exit_qty = qty if qty is not None else existing['qty']
@@ -93,7 +107,7 @@ class PositionService:
 
             self._apply_account_sell(code, exit_qty, exit_price, commit=False)
 
-            self.repository.remove_pending_order(run_id, code, 'SELL', commit=False)
+            self._consume_pending_order(run_id, code, 'SELL', exit_qty)
             self.repository.record_execution(
                 run_id=run_id,
                 code=code,
@@ -151,7 +165,7 @@ class PositionService:
                     position_qty_after = 0
                     avg_entry_after = None
 
-                self.repository.remove_pending_order(position['run_id'], code, 'SELL', commit=False)
+                self._consume_pending_order(position['run_id'], code, 'SELL', allocated_qty)
                 self.repository.record_execution(
                     run_id=position['run_id'],
                     code=code,

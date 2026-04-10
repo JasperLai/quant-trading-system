@@ -97,29 +97,14 @@ def build_agent_signal_payload(
     }
 
     if action.upper() == 'BUY':
-        confirm_api = f'/api/runs/{run_id}/confirm-buy' if run_id else None
-        confirm_payload = {
-            'code': code,
-            'qty': quantity,
-            'entryPrice': price,
-            'reason': note or 'agent成交确认',
-        }
+        confirm_api = None
+        confirm_payload = None
     elif source == 'guardian' and account_id:
-        confirm_api = f'/api/accounts/{account_id}/confirm-sell'
-        confirm_payload = {
-            'code': code,
-            'qty': quantity,
-            'exitPrice': price,
-            'reason': note or 'guardian成交确认',
-        }
+        confirm_api = None
+        confirm_payload = None
     else:
-        confirm_api = f'/api/runs/{run_id}/confirm-sell' if run_id else None
-        confirm_payload = {
-            'code': code,
-            'qty': quantity,
-            'exitPrice': price,
-            'reason': note or 'agent成交确认',
-        }
+        confirm_api = None
+        confirm_payload = None
 
     return {
         'signalType': 'TRADE_INTENT',
@@ -141,10 +126,14 @@ def build_agent_signal_payload(
             'method': 'POST',
             'payload': execution_payload,
         },
+        'settlement': {
+            'mode': 'AUTO_BY_TRADE_ORDER',
+            'description': '通过 /api/trading/orders 下单后，后端会基于 broker 订单实际成交量自动落账，无需再调 confirm 接口。',
+        },
         'confirmation': {
             'api': confirm_api,
-            'method': 'POST' if confirm_api else None,
-            'payload': confirm_payload if confirm_api else None,
+            'method': None,
+            'payload': confirm_payload,
         },
     }
 
@@ -166,8 +155,8 @@ def send_signal(code, action, price, quantity, note='', **kwargs):
     message += (
         "\n\n请严格按以下流程执行："
         "\n1. 调用 execution.api 下单。"
-        "\n2. 若订单成交，再调用 confirmation.api 做成交确认。"
-        "\n3. 不要直接调用 FUTU API，不要跳过确认接口。"
+        "\n2. 不要直接调用 FUTU API。"
+        "\n3. 下单后由后端基于 broker 实际成交量自动落账，不需要再手动调用 confirm 接口。"
         f"\n\nsignal_payload={json.dumps(payload, ensure_ascii=False)}"
     )
 

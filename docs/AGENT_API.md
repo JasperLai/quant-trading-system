@@ -34,16 +34,14 @@ http://127.0.0.1:8000
 
 #### 成交确认
 
-agent 实际成交后，需要显式回调：
+当 agent 通过后端交易接口下单时，不需要再手动调用确认接口。
 
-- `confirm-buy`
-- `confirm-sell`
-- `account confirm-sell`（guardian 账户级风控卖出）
+当前实现中，后端会优先基于 OpenD 交易推送回报自动更新 SQLite；若推送暂时缺失，则由后台订单同步作为兜底。
 
-当前实现中，后端会直接在主进程通过 `PositionService` 更新 SQLite，不再写命令表等待子进程消费。
+自动落账会同时更新：
 
-一次确认会同时更新：
-
+- `trade_orders`
+- `trade_deals`
 - `strategy_positions`
 - `account_positions`
 - `pending_orders`
@@ -53,18 +51,16 @@ agent 实际成交后，需要显式回调：
 
 策略或 guardian 发给 agent 的消息中，会携带一段 `signal_payload=...` JSON。
 
-agent 应按其中的两个字段执行：
+agent 应按其中的 `execution` 字段执行：
 
 - `execution`
   表示应该调用的下单 API 和对应 payload
-- `confirmation`
-  表示订单成交后必须调用的确认 API 和对应 payload
 
 要求：
 
 1. 不要直接绕过后端调用 FUTU API
-2. 先调用 `execution.api` 下单
-3. 订单成交后，再调用 `confirmation.api` 回写系统状态
+2. 直接调用 `execution.api` 下单
+3. 成交确认由后端基于 broker 订单/成交回报自动完成，不需要手工再调 confirm 接口
 
 #### run_id
 

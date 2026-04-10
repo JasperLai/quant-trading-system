@@ -16,6 +16,9 @@ class FutuTradeGateway:
     def get_acc_list(self):
         return self.trade_ctx.get_acc_list()
 
+    def set_handler(self, handler):
+        return self.trade_ctx.set_handler(handler)
+
     def accinfo_query(self, **kwargs):
         return self.trade_ctx.accinfo_query(**kwargs)
 
@@ -30,4 +33,3 @@ class FutuTradeGateway:
 
     def close(self):
         self.trade_ctx.close()
-

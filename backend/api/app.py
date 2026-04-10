@@ -18,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.monitoring.guardian import PositionGuardian
+from backend.monitoring.order_sync import OrderSyncWorker
+from backend.monitoring.trade_push import TradePushWorker
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
 from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
@@ -98,6 +100,13 @@ class PlaceOrderRequest(BaseModel):
     market: str = 'HK'
     trade_env: str = Field('SIMULATE', alias='tradeEnv')
     order_type: str = Field('NORMAL', alias='orderType')
+    time_in_force: str = Field('DAY', alias='timeInForce')
+    fill_outside_rth: bool = Field(False, alias='fillOutsideRth')
+    session: str = 'NONE'
+    aux_price: Optional[float] = Field(None, alias='auxPrice')
+    trail_type: Optional[str] = Field('NONE', alias='trailType')
+    trail_value: Optional[float] = Field(None, alias='trailValue')
+    trail_spread: Optional[float] = Field(None, alias='trailSpread')
     acc_id: Optional[int] = Field(None, alias='accId')
     run_id: Optional[str] = Field(None, alias='runId')
     source: str = 'manual'
@@ -127,7 +136,7 @@ class StrategyRuntime:
         self.manager = StrategyManager()
         self.repository = RuntimeRepository(db_path=DB_PATH)
         self.position_service = PositionService(self.repository)
-        self.trading_service = TradingService(repository=self.repository)
+        self.trading_service = TradingService(repository=self.repository, position_service=self.position_service)
         self.runs: Dict[str, StrategyRun] = {}
         self.lock = threading.Lock()
 
@@ -434,6 +443,13 @@ class StrategyRuntime:
                 market=request.market,
                 trd_env=request.trade_env,
                 order_type=request.order_type,
+                time_in_force=request.time_in_force,
+                fill_outside_rth=request.fill_outside_rth,
+                session=request.session,
+                aux_price=request.aux_price,
+                trail_type=request.trail_type,
+                trail_value=request.trail_value,
+                trail_spread=request.trail_spread,
                 acc_id=request.acc_id,
                 run_id=request.run_id,
                 source=request.source,
@@ -491,6 +507,10 @@ def startup_guardian():
     runtime.reconcile_running_runs()
     app.state.guardian = PositionGuardian(runtime.repository)
     app.state.guardian.start()
+    app.state.trade_push = TradePushWorker(runtime.trading_service)
+    app.state.trade_push.start()
+    app.state.order_sync = OrderSyncWorker(runtime.trading_service)
+    app.state.order_sync.start()
 
 
 @app.on_event('shutdown')
@@ -498,6 +518,12 @@ def shutdown_guardian():
     guardian_instance = getattr(app.state, 'guardian', None)
     if guardian_instance is not None:
         guardian_instance.stop()
+    trade_push = getattr(app.state, 'trade_push', None)
+    if trade_push is not None:
+        trade_push.stop()
+    order_sync = getattr(app.state, 'order_sync', None)
+    if order_sync is not None:
+        order_sync.stop()
 
 
 @app.get('/api/health')
@@ -508,6 +534,8 @@ def health():
 @app.get('/api/system/status')
 def system_status():
     guardian = getattr(app.state, 'guardian', None)
+    trade_push = getattr(app.state, 'trade_push', None)
+    order_sync = getattr(app.state, 'order_sync', None)
     guardian_status = guardian.get_status() if guardian is not None else {
         'running': False,
         'threadAlive': False,
@@ -521,6 +549,16 @@ def system_status():
         'host': None,
         'port': None,
     }
+    order_sync_status = order_sync.get_status() if order_sync is not None else {
+        'running': False,
+        'lastError': 'order_sync_unavailable',
+        'intervalSec': None,
+    }
+    trade_push_status = trade_push.get_status() if trade_push is not None else {
+        'running': False,
+        'markets': [],
+        'lastError': 'trade_push_unavailable',
+    }
     return {
         'status': 'ok',
         'openD': {
@@ -531,6 +569,8 @@ def system_status():
             'port': guardian_status['port'],
         },
         'guardian': guardian_status,
+        'tradePush': trade_push_status,
+        'orderSync': order_sync_status,
     }
 
 

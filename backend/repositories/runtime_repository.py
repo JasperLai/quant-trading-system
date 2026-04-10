@@ -120,11 +120,40 @@ class RuntimeRepository:
                     trail_spread TEXT,
                     source TEXT,
                     note TEXT,
+                    settled_qty REAL NOT NULL DEFAULT 0,
+                    settlement_status TEXT,
+                    settled_at REAL,
                     raw_json TEXT,
                     recorded_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS trade_deals (
+                    deal_id TEXT PRIMARY KEY,
+                    broker_order_id TEXT,
+                    account_id TEXT,
+                    market TEXT,
+                    trade_env TEXT,
+                    code TEXT NOT NULL,
+                    stock_name TEXT,
+                    trd_side TEXT,
+                    qty REAL,
+                    price REAL,
+                    create_time TEXT,
+                    status TEXT,
+                    recorded_at REAL NOT NULL,
+                    raw_json TEXT
+                );
                 '''
             )
+            existing_columns = {
+                row['name'] for row in self.conn.execute("PRAGMA table_info(trade_orders)").fetchall()
+            }
+            if 'settled_qty' not in existing_columns:
+                self.conn.execute('ALTER TABLE trade_orders ADD COLUMN settled_qty REAL NOT NULL DEFAULT 0')
+            if 'settlement_status' not in existing_columns:
+                self.conn.execute('ALTER TABLE trade_orders ADD COLUMN settlement_status TEXT')
+            if 'settled_at' not in existing_columns:
+                self.conn.execute('ALTER TABLE trade_orders ADD COLUMN settled_at REAL')
             self.conn.commit()
 
     @contextmanager
@@ -264,6 +293,14 @@ class RuntimeRepository:
             )
             if commit:
                 self.conn.commit()
+
+    def get_pending_order(self, run_id, code, side):
+        with self.lock:
+            row = self.conn.execute(
+                'SELECT * FROM pending_orders WHERE run_id=? AND code=? AND side=?',
+                (run_id, code, side),
+            ).fetchone()
+        return dict(row) if row else None
 
     def remove_pending_order(self, run_id, code, side, commit=True):
         with self.lock:
@@ -433,6 +470,32 @@ class RuntimeRepository:
             result.append(item)
         return result
 
+    def get_trade_order(self, broker_order_id):
+        with self.lock:
+            row = self.conn.execute(
+                'SELECT * FROM trade_orders WHERE broker_order_id=?',
+                (str(broker_order_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item['raw'] = json.loads(item['raw_json']) if item.get('raw_json') else None
+        item.pop('raw_json', None)
+        return item
+
+    def get_trade_deal(self, deal_id):
+        with self.lock:
+            row = self.conn.execute(
+                'SELECT * FROM trade_deals WHERE deal_id=?',
+                (str(deal_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item['raw'] = json.loads(item['raw_json']) if item.get('raw_json') else None
+        item.pop('raw_json', None)
+        return item
+
     def upsert_trade_order(self, order, commit=True):
         recorded_at = time.time()
         raw_json = json.dumps(order, ensure_ascii=False)
@@ -444,9 +507,9 @@ class RuntimeRepository:
                     trd_side, order_type, order_status, price, qty, dealt_qty, dealt_avg_price,
                     create_time, updated_time, currency, last_err_msg, remark, time_in_force,
                     fill_outside_rth, session, aux_price, trail_type, trail_value, trail_spread,
-                    source, note, raw_json, recorded_at
+                    source, note, settled_qty, settlement_status, settled_at, raw_json, recorded_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(broker_order_id) DO UPDATE SET
                     run_id=excluded.run_id,
                     account_id=excluded.account_id,
@@ -475,6 +538,9 @@ class RuntimeRepository:
                     trail_spread=excluded.trail_spread,
                     source=excluded.source,
                     note=excluded.note,
+                    settled_qty=COALESCE(trade_orders.settled_qty, 0),
+                    settlement_status=COALESCE(trade_orders.settlement_status, excluded.settlement_status),
+                    settled_at=COALESCE(trade_orders.settled_at, excluded.settled_at),
                     raw_json=excluded.raw_json,
                     recorded_at=excluded.recorded_at
                 ''',
@@ -507,9 +573,72 @@ class RuntimeRepository:
                     str(order.get('trail_spread')) if order.get('trail_spread') is not None else None,
                     order.get('source'),
                     order.get('note'),
+                    order.get('settled_qty', 0),
+                    order.get('settlement_status'),
+                    order.get('settled_at'),
                     raw_json,
                     recorded_at,
                 ),
+            )
+            if commit:
+                self.conn.commit()
+
+    def upsert_trade_deal(self, deal, commit=True):
+        recorded_at = time.time()
+        raw_json = json.dumps(deal, ensure_ascii=False)
+        with self.lock:
+            self.conn.execute(
+                '''
+                INSERT INTO trade_deals (
+                    deal_id, broker_order_id, account_id, market, trade_env, code, stock_name,
+                    trd_side, qty, price, create_time, status, recorded_at, raw_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(deal_id) DO UPDATE SET
+                    broker_order_id=excluded.broker_order_id,
+                    account_id=excluded.account_id,
+                    market=excluded.market,
+                    trade_env=excluded.trade_env,
+                    code=excluded.code,
+                    stock_name=excluded.stock_name,
+                    trd_side=excluded.trd_side,
+                    qty=excluded.qty,
+                    price=excluded.price,
+                    create_time=excluded.create_time,
+                    status=excluded.status,
+                    recorded_at=excluded.recorded_at,
+                    raw_json=excluded.raw_json
+                ''',
+                (
+                    str(deal.get('deal_id')),
+                    str(deal.get('order_id')) if deal.get('order_id') is not None else None,
+                    str(deal.get('account_id')) if deal.get('account_id') is not None else None,
+                    deal.get('market'),
+                    deal.get('trade_env'),
+                    deal.get('code'),
+                    deal.get('stock_name'),
+                    deal.get('trd_side'),
+                    deal.get('qty'),
+                    deal.get('price'),
+                    deal.get('create_time'),
+                    deal.get('status'),
+                    recorded_at,
+                    raw_json,
+                ),
+            )
+            if commit:
+                self.conn.commit()
+
+    def mark_trade_order_settled(self, broker_order_id, settled_qty, settlement_status='SETTLED', commit=True):
+        settled_at = time.time()
+        with self.lock:
+            self.conn.execute(
+                '''
+                UPDATE trade_orders
+                SET settled_qty=?, settlement_status=?, settled_at=?
+                WHERE broker_order_id=?
+                ''',
+                (settled_qty, settlement_status, settled_at, str(broker_order_id)),
             )
             if commit:
                 self.conn.commit()
@@ -530,6 +659,37 @@ class RuntimeRepository:
         params.append(limit)
         with self.lock:
             rows = self.conn.execute(query, tuple(params)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item['raw'] = json.loads(item['raw_json']) if item.get('raw_json') else None
+            item.pop('raw_json', None)
+            result.append(item)
+        return result
+
+    def list_unsettled_trade_orders(self, limit=200):
+        active_statuses = (
+            'SUBMITTING',
+            'SUBMITTED',
+            'WAITING_SUBMIT',
+            'FILLED_PART',
+            'FILLED_PARTIAL',
+        )
+        placeholders = ','.join('?' for _ in active_statuses)
+        query = f'''
+            SELECT * FROM trade_orders
+            WHERE (
+                COALESCE(dealt_qty, 0) > COALESCE(settled_qty, 0)
+                OR (
+                    COALESCE(settlement_status, '') != 'CLOSED_NO_FILL'
+                    AND order_status IN ({placeholders})
+                )
+            )
+            ORDER BY recorded_at DESC
+            LIMIT ?
+        '''
+        with self.lock:
+            rows = self.conn.execute(query, (*active_statuses, limit)).fetchall()
         result = []
         for row in rows:
             item = dict(row)

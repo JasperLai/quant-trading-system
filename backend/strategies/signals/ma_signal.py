@@ -195,7 +195,7 @@ class SinglePositionMaSignal(BaseMaSignal):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pending_buys = set()
-        self.pending_sells = set()
+        self.pending_sells = {}
 
     def get_pending_buy_qty(self, code):
         return self.order_qty if code in self.pending_buys else 0
@@ -210,20 +210,20 @@ class SinglePositionMaSignal(BaseMaSignal):
         return position_qty == 0 and code not in self.pending_buys
 
     def get_pending_sell_qty(self, code):
-        return 1 if code in self.pending_sells else 0
+        return self.pending_sells.get(code, 0)
 
     def add_pending_sell(self, code, qty):
-        self.pending_sells.add(code)
+        self.pending_sells[code] = qty
 
     def clear_pending_sell(self, code, qty=None):
-        self.pending_sells.discard(code)
+        self.pending_sells.pop(code, None)
 
     def can_send_sell(self, code, position_qty, qty):
         return position_qty > 0 and code not in self.pending_sells and qty > 0
 
     def replace_pending_orders(self, pending_orders):
         buy_codes = {item['code'] for item in pending_orders if item['side'] == 'BUY'}
-        sell_codes = {item['code'] for item in pending_orders if item['side'] == 'SELL'}
+        sell_codes = {item['code']: item['qty'] for item in pending_orders if item['side'] == 'SELL'}
         self.pending_buys = buy_codes
         self.pending_sells = sell_codes
 
