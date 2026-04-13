@@ -23,7 +23,7 @@ from backend.monitoring.order_sync import OrderSyncWorker
 from backend.monitoring.trade_push import TradePushWorker
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
-from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
+from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager, resolve_strategy_params, strategy_supports_backtest
 from backend.services.trading_service import TradingService
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -145,15 +145,7 @@ class StrategyRuntime:
         return self.manager.list_strategy_definitions()
 
     def _resolve_strategy_params(self, strategy_name: str, overrides: Optional[Dict[str, Any]] = None):
-        params = dict(STRATEGY_METADATA[strategy_name].get('params', {}))
-        for key, value in (overrides or {}).items():
-            if value is None:
-                continue
-            if key == 'codes' and isinstance(value, str):
-                params[key] = [item.strip() for item in value.split(',') if item.strip()]
-            else:
-                params[key] = value
-        return params
+        return resolve_strategy_params(strategy_name, overrides)
 
     def _build_command(self, config: Dict) -> List[str]:
         cmd = ['python3', '-m', 'backend.cli.run_strategy', '--strategy', config['strategy']]
@@ -386,6 +378,8 @@ class StrategyRuntime:
     def run_backtest_validation(self, request: BacktestValidationRequest):
         if request.strategy_name not in STRATEGY_METADATA:
             raise HTTPException(status_code=404, detail='Strategy not found')
+        if not strategy_supports_backtest(request.strategy_name):
+            raise HTTPException(status_code=409, detail='Strategy does not support backtest')
 
         strategy_params = self._resolve_strategy_params(
             request.strategy_name,
@@ -404,6 +398,7 @@ class StrategyRuntime:
 
         args = Args()
         args.strategy = request.strategy_name
+        args.strategy_params_json = json.dumps(strategy_params, ensure_ascii=False)
         args.codes = strategy_params.get('codes', request.codes)
         args.start = request.start
         args.end = request.end
@@ -411,6 +406,16 @@ class StrategyRuntime:
         args.long_ma = strategy_params.get('long_ma', request.long_ma)
         args.order_qty = strategy_params.get('order_qty', request.order_qty)
         args.max_position_per_stock = strategy_params.get('max_position_per_stock', request.max_position_per_stock)
+        args.rsi_period = strategy_params.get('rsi_period')
+        args.oversold = strategy_params.get('oversold')
+        args.overbought = strategy_params.get('overbought')
+        args.bollinger_period = strategy_params.get('bollinger_period')
+        args.stddev_multiplier = strategy_params.get('stddev_multiplier')
+        args.macd_fast = strategy_params.get('macd_fast')
+        args.macd_slow = strategy_params.get('macd_slow')
+        args.macd_signal = strategy_params.get('macd_signal')
+        args.donchian_entry = strategy_params.get('donchian_entry')
+        args.donchian_exit = strategy_params.get('donchian_exit')
         args.initial_cash = request.initial_cash
         args.commission_rate = request.commission_rate
         args.slippage = request.slippage

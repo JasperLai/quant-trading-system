@@ -2,6 +2,16 @@ import { useEffect, useState } from 'react';
 import { Card, Col, Descriptions, Empty, Row, Space, Spin, Tag, Typography } from 'antd';
 import { api } from './api';
 
+function renderParamPreview(strategy) {
+  const params = strategy.params || {};
+  const entries = Object.entries(params).filter(([key]) => key !== 'codes');
+  if (!entries.length) return '无';
+  return entries
+    .slice(0, 3)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' / ');
+}
+
 export default function StrategyCatalogPage() {
   const [strategies, setStrategies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -51,15 +61,15 @@ export default function StrategyCatalogPage() {
                 <Descriptions.Item label="默认标的">
                   {(strategy.params.codes || []).join(', ')}
                 </Descriptions.Item>
-                <Descriptions.Item label="默认 MA">
-                  {strategy.params.short_ma} / {strategy.params.long_ma}
+                <Descriptions.Item label="默认参数">
+                  {renderParamPreview(strategy)}
                 </Descriptions.Item>
                 <Descriptions.Item label="默认下单数量">
                   {strategy.params.order_qty}
                 </Descriptions.Item>
-                {'max_position_per_stock' in strategy.params ? (
-                  <Descriptions.Item label="单标的最大仓位">
-                    {strategy.params.max_position_per_stock}
+                {'supports_backtest' in strategy ? (
+                  <Descriptions.Item label="支持回测">
+                    {strategy.supports_backtest === false ? '否' : '是'}
                   </Descriptions.Item>
                 ) : null}
               </Descriptions>

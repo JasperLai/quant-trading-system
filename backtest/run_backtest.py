@@ -13,19 +13,30 @@ sys.path.insert(0, str(ROOT))
 
 from backtest.data_provider import FutuHistoryDataProvider
 from backtest.engine import BacktestEngine
-from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
+from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager, resolve_strategy_params, strategy_supports_backtest
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='历史K线回测')
     parser.add_argument('--strategy', default='single_position_ma', choices=sorted(STRATEGY_METADATA.keys()))
-    parser.add_argument('--codes', nargs='+', default=['SZ.000001'])
+    parser.add_argument('--codes', nargs='+', default=None)
     parser.add_argument('--start', required=True, help='开始日期，例如 2025-01-01')
     parser.add_argument('--end', required=True, help='结束日期，例如 2025-12-31')
-    parser.add_argument('--short-ma', type=int, default=5)
-    parser.add_argument('--long-ma', type=int, default=20)
-    parser.add_argument('--order-qty', type=int, default=100)
+    parser.add_argument('--short-ma', type=int, default=None)
+    parser.add_argument('--long-ma', type=int, default=None)
+    parser.add_argument('--order-qty', type=int, default=None)
     parser.add_argument('--max-position-per-stock', type=int, default=None)
+    parser.add_argument('--rsi-period', type=int, default=None)
+    parser.add_argument('--oversold', type=float, default=None)
+    parser.add_argument('--overbought', type=float, default=None)
+    parser.add_argument('--bollinger-period', type=int, default=None)
+    parser.add_argument('--stddev-multiplier', type=float, default=None)
+    parser.add_argument('--macd-fast', type=int, default=None)
+    parser.add_argument('--macd-slow', type=int, default=None)
+    parser.add_argument('--macd-signal', type=int, default=None)
+    parser.add_argument('--donchian-entry', type=int, default=None)
+    parser.add_argument('--donchian-exit', type=int, default=None)
+    parser.add_argument('--strategy-params-json', default=None, help='通用策略参数 JSON')
     parser.add_argument('--initial-cash', type=float, default=100000.0)
     parser.add_argument('--commission-rate', type=float, default=0.001)
     parser.add_argument('--slippage', type=float, default=0.0)
@@ -35,19 +46,33 @@ def parse_args():
 
 
 def build_strategy_kwargs(args):
-    kwargs = {
-        'codes': args.codes,
-        'short_ma': args.short_ma,
-        'long_ma': args.long_ma,
-        'order_qty': args.order_qty,
-    }
-    if args.max_position_per_stock is not None and args.strategy == 'pyramiding_ma':
-        kwargs['max_position_per_stock'] = args.max_position_per_stock
-    return kwargs
+    return resolve_strategy_params(
+        args.strategy,
+        {
+            **(json.loads(args.strategy_params_json) if args.strategy_params_json else {}),
+            'codes': args.codes,
+            'short_ma': args.short_ma,
+            'long_ma': args.long_ma,
+            'order_qty': args.order_qty,
+            'max_position_per_stock': args.max_position_per_stock,
+            'rsi_period': args.rsi_period,
+            'oversold': args.oversold,
+            'overbought': args.overbought,
+            'bollinger_period': args.bollinger_period,
+            'stddev_multiplier': args.stddev_multiplier,
+            'macd_fast': args.macd_fast,
+            'macd_slow': args.macd_slow,
+            'macd_signal': args.macd_signal,
+            'donchian_entry': args.donchian_entry,
+            'donchian_exit': args.donchian_exit,
+        },
+    )
 
 
 def main():
     args = parse_args()
+    if not strategy_supports_backtest(args.strategy):
+        raise ValueError(f'策略 {args.strategy} 当前不支持回测')
     manager = StrategyManager()
     signal = manager.load_signal(args.strategy, **build_strategy_kwargs(args))
 

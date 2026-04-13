@@ -5,6 +5,12 @@ import argparse
 import json
 
 from backend.strategies.runtime.realtime_runner import RealtimeStrategyRunner
+from backend.strategies.signals.indicator_signals import (
+    BollingerReversionSignal,
+    DonchianBreakoutSignal,
+    MacdTrendSignal,
+    RsiReversionSignal,
+)
 from backend.strategies.signals.intraday_signal import IntradayBreakoutSignal
 from backend.strategies.signals.ma_signal import PyramidingMaSignal, SinglePositionMaSignal
 
@@ -19,6 +25,18 @@ STRATEGY_REGISTRY = {
     'intraday_breakout_test': {
         'signal_class': IntradayBreakoutSignal,
     },
+    'rsi_reversion': {
+        'signal_class': RsiReversionSignal,
+    },
+    'bollinger_reversion': {
+        'signal_class': BollingerReversionSignal,
+    },
+    'macd_trend': {
+        'signal_class': MacdTrendSignal,
+    },
+    'donchian_breakout': {
+        'signal_class': DonchianBreakoutSignal,
+    },
 }
 
 STRATEGY_METADATA = {
@@ -27,6 +45,13 @@ STRATEGY_METADATA = {
         'name': 'single_position_ma',
         'title': '单仓均线策略',
         'description': '单标的同一时间只允许一笔正式持仓，适合简单金叉买入模型。',
+        'supports_backtest': True,
+        'learning_notes': {
+            'style': '趋势跟随',
+            'entry': '短期均线上穿长期均线时买入。',
+            'exit': '短期均线下穿长期均线时卖出。',
+            'usage': '适合理解最基础的金叉/死叉模型，也是其他趋势策略的起点。',
+        },
         'params': {
             'codes': ['SZ.000001'],
             'short_ma': 5,
@@ -68,6 +93,13 @@ STRATEGY_METADATA = {
         'name': 'pyramiding_ma',
         'title': '有上限加仓均线策略',
         'description': '允许在仓位上限内继续加仓，并把待确认买单数量纳入仓位计算。',
+        'supports_backtest': True,
+        'learning_notes': {
+            'style': '趋势跟随 + 分批建仓',
+            'entry': '均线金叉时买入，只要总仓位未达到上限就允许继续加仓。',
+            'exit': '均线死叉时卖出当前仓位。',
+            'usage': '适合理解“信号正确但建仓节奏不同”时，持仓曲线会如何变化。',
+        },
         'params': {
             'codes': ['SZ.000001'],
             'short_ma': 5,
@@ -113,11 +145,117 @@ STRATEGY_METADATA = {
             },
         ],
     },
+    'rsi_reversion': {
+        'name': 'rsi_reversion',
+        'title': 'RSI 反转策略',
+        'description': '在超卖区等待 RSI 回升买入，在超买区卖出，适合均值回归型日线回测。',
+        'supports_backtest': True,
+        'learning_notes': {
+            'style': '均值回归',
+            'entry': 'RSI 从超卖区下方向上回穿阈值时买入。',
+            'exit': '持仓后 RSI 进入超买区时卖出。',
+            'usage': '适合理解“跌深反弹”型策略，通常更依赖震荡市，不适合单边趋势很强的阶段。',
+        },
+        'params': {
+            'codes': ['HK.03690'],
+            'rsi_period': 14,
+            'oversold': 30,
+            'overbought': 70,
+            'order_qty': 100,
+        },
+        'param_fields': [
+            {'name': 'codes', 'label': '标的列表', 'type': 'codes', 'required': True, 'placeholder': 'HK.03690'},
+            {'name': 'rsi_period', 'label': 'RSI周期', 'type': 'number', 'required': True, 'min': 2},
+            {'name': 'oversold', 'label': '超卖阈值', 'type': 'number', 'required': True, 'min': 1, 'max': 50},
+            {'name': 'overbought', 'label': '超买阈值', 'type': 'number', 'required': True, 'min': 50, 'max': 99},
+            {'name': 'order_qty', 'label': '单次下单数量', 'type': 'number', 'required': True, 'min': 1},
+        ],
+    },
+    'bollinger_reversion': {
+        'name': 'bollinger_reversion',
+        'title': '布林带反转策略',
+        'description': '价格跌出下轨后重新回到通道内买入，回归中轨时卖出。',
+        'supports_backtest': True,
+        'learning_notes': {
+            'style': '波动带回归',
+            'entry': '价格跌破布林下轨后重新站回通道内时买入。',
+            'exit': '价格回归到布林中轨附近时卖出。',
+            'usage': '适合理解波动扩张后的回归逻辑，对横盘震荡标的更友好。',
+        },
+        'params': {
+            'codes': ['HK.03690'],
+            'bollinger_period': 20,
+            'stddev_multiplier': 2.0,
+            'order_qty': 100,
+        },
+        'param_fields': [
+            {'name': 'codes', 'label': '标的列表', 'type': 'codes', 'required': True, 'placeholder': 'HK.03690'},
+            {'name': 'bollinger_period', 'label': '布林周期', 'type': 'number', 'required': True, 'min': 5},
+            {'name': 'stddev_multiplier', 'label': '标准差倍数', 'type': 'number', 'required': True, 'min': 0.5, 'step': 0.1},
+            {'name': 'order_qty', 'label': '单次下单数量', 'type': 'number', 'required': True, 'min': 1},
+        ],
+    },
+    'macd_trend': {
+        'name': 'macd_trend',
+        'title': 'MACD 趋势策略',
+        'description': '使用 MACD 金叉/死叉跟随趋势，适合中短期波段回测。',
+        'supports_backtest': True,
+        'learning_notes': {
+            'style': '动量趋势',
+            'entry': 'MACD 线上穿 Signal 线时买入。',
+            'exit': 'MACD 线下穿 Signal 线时卖出。',
+            'usage': '适合理解趋势确认比均线更灵敏时，信号频率和回撤会如何变化。',
+        },
+        'params': {
+            'codes': ['HK.03690'],
+            'macd_fast': 12,
+            'macd_slow': 26,
+            'macd_signal': 9,
+            'order_qty': 100,
+        },
+        'param_fields': [
+            {'name': 'codes', 'label': '标的列表', 'type': 'codes', 'required': True, 'placeholder': 'HK.03690'},
+            {'name': 'macd_fast', 'label': '快线周期', 'type': 'number', 'required': True, 'min': 2},
+            {'name': 'macd_slow', 'label': '慢线周期', 'type': 'number', 'required': True, 'min': 3},
+            {'name': 'macd_signal', 'label': '信号线周期', 'type': 'number', 'required': True, 'min': 2},
+            {'name': 'order_qty', 'label': '单次下单数量', 'type': 'number', 'required': True, 'min': 1},
+        ],
+    },
+    'donchian_breakout': {
+        'name': 'donchian_breakout',
+        'title': '唐奇安突破策略',
+        'description': '突破前 N 日区间高点买入，跌破退出通道卖出，适合趋势突破回测。',
+        'supports_backtest': True,
+        'learning_notes': {
+            'style': '区间突破',
+            'entry': '价格突破过去 N 日最高价时买入。',
+            'exit': '价格跌破较短退出通道低点时卖出。',
+            'usage': '适合理解海龟式突破思路，对强趋势行情更敏感，但震荡期容易被来回打止损。',
+        },
+        'params': {
+            'codes': ['HK.03690'],
+            'donchian_entry': 20,
+            'donchian_exit': 10,
+            'order_qty': 100,
+        },
+        'param_fields': [
+            {'name': 'codes', 'label': '标的列表', 'type': 'codes', 'required': True, 'placeholder': 'HK.03690'},
+            {'name': 'donchian_entry', 'label': '突破周期', 'type': 'number', 'required': True, 'min': 5},
+            {'name': 'donchian_exit', 'label': '退出周期', 'type': 'number', 'required': True, 'min': 2},
+            {'name': 'order_qty', 'label': '单次下单数量', 'type': 'number', 'required': True, 'min': 1},
+        ],
+    },
     'intraday_breakout_test': {
         'name': 'intraday_breakout_test',
         'title': '日内突破测试策略',
         'description': '以实时报价做日内突破买入与回撤/尾盘卖出，适合模拟盘全流程联调。',
         'supports_backtest': False,
+        'learning_notes': {
+            'style': '日内测试',
+            'entry': '09:45 之后向上突破参考价一定比例时买入。',
+            'exit': '冲高回撤或尾盘强制平仓时卖出。',
+            'usage': '主要用来联调模拟盘流程，不适合作为现在这套日线回测模型的正式回测对象。',
+        },
         'params': {
             'codes': ['HK.03690'],
             'order_qty': 100,
@@ -192,7 +330,13 @@ class StrategyManager:
         return sorted(self.registry.keys())
 
     def list_strategy_definitions(self):
-        return [STRATEGY_METADATA[name] for name in self.list_strategies()]
+        return [
+            {
+                **STRATEGY_METADATA[name],
+                'supports_backtest': STRATEGY_METADATA[name].get('supports_backtest', True),
+            }
+            for name in self.list_strategies()
+        ]
 
     def load_strategy(self, name, **kwargs):
         if name not in self.registry:
@@ -233,32 +377,68 @@ def parse_args():
     parser.add_argument('--pullback-pct', type=float, default=None, help='日内回撤卖出阈值')
     parser.add_argument('--entry-start-time', default=None, help='日内策略开始入场时间')
     parser.add_argument('--flat-time', default=None, help='日内策略平仓时间')
+    parser.add_argument('--rsi-period', type=int, default=None, help='RSI 周期')
+    parser.add_argument('--oversold', type=float, default=None, help='RSI 超卖阈值')
+    parser.add_argument('--overbought', type=float, default=None, help='RSI 超买阈值')
+    parser.add_argument('--bollinger-period', type=int, default=None, help='布林周期')
+    parser.add_argument('--stddev-multiplier', type=float, default=None, help='布林标准差倍数')
+    parser.add_argument('--macd-fast', type=int, default=None, help='MACD 快线周期')
+    parser.add_argument('--macd-slow', type=int, default=None, help='MACD 慢线周期')
+    parser.add_argument('--macd-signal', type=int, default=None, help='MACD 信号线周期')
+    parser.add_argument('--donchian-entry', type=int, default=None, help='唐奇安突破周期')
+    parser.add_argument('--donchian-exit', type=int, default=None, help='唐奇安退出周期')
     parser.add_argument('--strategy-params-json', default=None, help='通用策略参数 JSON')
     parser.add_argument('--run-id', default=None, help='运行实例 ID，用于外部控制回调')
     parser.add_argument('--db-path', default=None, help='SQLite 数据库路径')
     return parser.parse_args()
 
 
+def resolve_strategy_params(strategy_name, overrides=None):
+    if strategy_name not in STRATEGY_METADATA:
+        raise ValueError(f'未知策略: {strategy_name}')
+    params = dict(STRATEGY_METADATA[strategy_name].get('params', {}))
+    for key, value in (overrides or {}).items():
+        if value is None:
+            continue
+        if key == 'codes' and isinstance(value, str):
+            params[key] = [item.strip() for item in value.split(',') if item.strip()]
+        else:
+            params[key] = value
+    return params
+
+
+def strategy_supports_backtest(strategy_name):
+    if strategy_name not in STRATEGY_METADATA:
+        raise ValueError(f'未知策略: {strategy_name}')
+    return STRATEGY_METADATA[strategy_name].get('supports_backtest', True)
+
+
 def build_strategy_kwargs(args):
-    kwargs = json.loads(args.strategy_params_json) if args.strategy_params_json else {}
-    if args.codes:
-        kwargs['codes'] = args.codes
-    if args.short_ma is not None:
-        kwargs['short_ma'] = args.short_ma
-    if args.long_ma is not None:
-        kwargs['long_ma'] = args.long_ma
-    if args.order_qty is not None:
-        kwargs['order_qty'] = args.order_qty
-    if args.max_position_per_stock is not None and args.strategy == 'pyramiding_ma':
-        kwargs['max_position_per_stock'] = args.max_position_per_stock
-    if args.breakout_pct is not None:
-        kwargs['breakout_pct'] = args.breakout_pct
-    if args.pullback_pct is not None:
-        kwargs['pullback_pct'] = args.pullback_pct
-    if args.entry_start_time is not None:
-        kwargs['entry_start_time'] = args.entry_start_time
-    if args.flat_time is not None:
-        kwargs['flat_time'] = args.flat_time
+    kwargs = resolve_strategy_params(
+        args.strategy,
+        {
+            **(json.loads(args.strategy_params_json) if args.strategy_params_json else {}),
+            'codes': args.codes,
+            'short_ma': args.short_ma,
+            'long_ma': args.long_ma,
+            'order_qty': args.order_qty,
+            'max_position_per_stock': args.max_position_per_stock,
+            'breakout_pct': args.breakout_pct,
+            'pullback_pct': args.pullback_pct,
+            'entry_start_time': args.entry_start_time,
+            'flat_time': args.flat_time,
+            'rsi_period': args.rsi_period,
+            'oversold': args.oversold,
+            'overbought': args.overbought,
+            'bollinger_period': args.bollinger_period,
+            'stddev_multiplier': args.stddev_multiplier,
+            'macd_fast': args.macd_fast,
+            'macd_slow': args.macd_slow,
+            'macd_signal': args.macd_signal,
+            'donchian_entry': args.donchian_entry,
+            'donchian_exit': args.donchian_exit,
+        },
+    )
     if args.run_id is not None:
         kwargs['run_id'] = args.run_id
     if args.db_path is not None:

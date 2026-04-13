@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  Descriptions,
   Divider,
   Dropdown,
   Form,
@@ -212,23 +213,49 @@ export default function StrategyRunsPage() {
       </Card>
       <Row gutter={[16, 16]}>
         <Col span={10}>
-          <Card className="control-card" title="新建并启动策略">
-            <Form layout="vertical" form={form} onFinish={handleStart}>
-              <Form.Item name="strategyName" label="策略" rules={[{ required: true }]}>
-                <Select
-                  options={strategies.map((item) => ({
-                    label: item.title,
-                    value: item.name,
-                  }))}
-                />
-              </Form.Item>
-              {(selectedStrategy?.param_fields || []).map((field) => renderStrategyField(field))}
-              <Divider />
-              <Button type="primary" htmlType="submit" loading={loading}>
-                启动策略
-              </Button>
-            </Form>
-          </Card>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Card className="control-card" title="新建并启动策略">
+              <Form layout="vertical" form={form} onFinish={handleStart}>
+                <Form.Item name="strategyName" label="策略" rules={[{ required: true }]}>
+                  <Select
+                    options={strategies.map((item) => ({
+                      label: item.title,
+                      value: item.name,
+                    }))}
+                  />
+                </Form.Item>
+                {(selectedStrategy?.param_fields || []).map((field) => renderStrategyField(field))}
+                <Divider />
+                <Button type="primary" htmlType="submit" loading={loading}>
+                  启动策略
+                </Button>
+              </Form>
+            </Card>
+
+            <Card className="control-card" title="策略说明">
+              {selectedStrategy ? (
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="策略类型">
+                    {selectedStrategy.learning_notes?.style || '未定义'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="买入逻辑">
+                    {selectedStrategy.learning_notes?.entry || selectedStrategy.description}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="卖出逻辑">
+                    {selectedStrategy.learning_notes?.exit || '按策略自身规则卖出'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="适用场景">
+                    {selectedStrategy.learning_notes?.usage || selectedStrategy.description}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="默认标的">
+                    {(selectedStrategy.params?.codes || []).join(', ')}
+                  </Descriptions.Item>
+                </Descriptions>
+              ) : (
+                <Typography.Text type="secondary">请选择一个策略查看说明。</Typography.Text>
+              )}
+            </Card>
+          </Space>
         </Col>
         <Col span={14}>
           <Card className="control-card" title="策略实例列表">

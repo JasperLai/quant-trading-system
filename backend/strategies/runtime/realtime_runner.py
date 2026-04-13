@@ -177,6 +177,23 @@ class RealtimeStrategyRunner:
             )
         return lines
 
+    def format_history_init_log(self, code, bar_count):
+        """历史日线初始化完成后的日志文案钩子。"""
+        hook = getattr(self.signal, 'format_history_init_log', None)
+        if callable(hook):
+            return hook(code, bar_count)
+        if getattr(self.signal, 'short_ma_period', 0) and getattr(self.signal, 'long_ma_period', 0):
+            short_ma, long_ma = self.signal.refresh_reference_ma(code)
+            return "  %s: 获取到 %s 条K线 | 短期MA(%s): %.2f | 长期MA(%s): %.2f" % (
+                code,
+                bar_count,
+                self.short_ma_period,
+                short_ma,
+                self.long_ma_period,
+                long_ma,
+            )
+        return f"  {code}: 获取到 {bar_count} 条K线"
+
     @property
     def quote_ctx(self):
         return self.gateway.context
@@ -461,16 +478,8 @@ class RealtimeStrategyRunner:
                 if ret == RET_OK:
                     for bar in data.to_dict('records'):
                         self.on_bar(bar)
-                    short_ma, long_ma = self.signal.refresh_reference_ma(code)
-                    logger.info(
-                        "  %s: 获取到 %s 条K线 | 短期MA(%s): %.2f | 长期MA(%s): %.2f",
-                        code,
-                        len(data),
-                        self.short_ma_period,
-                        short_ma,
-                        self.long_ma_period,
-                        long_ma,
-                    )
+                    self.signal.refresh_reference_ma(code)
+                    logger.info(self.format_history_init_log(code, len(data)))
                 else:
                     logger.error("  %s: 获取失败 %s", code, data)
 
@@ -492,6 +501,3 @@ class RealtimeStrategyRunner:
         if self.repository is not None and self.run_id is not None:
             self.repository.update_run_status(self.run_id, 'stopped', stopped_at=time.time())
         logger.info("策略已停止")
-
-
-RealtimeMaStrategyRunner = RealtimeStrategyRunner

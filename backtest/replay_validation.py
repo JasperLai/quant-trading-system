@@ -16,19 +16,30 @@ from backtest.engine import BacktestEngine
 from backend.core.config import TAKE_PROFIT_PCT
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
-from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager
+from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager, resolve_strategy_params, strategy_supports_backtest
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='回测信号 -> 业务流程回放验证')
     parser.add_argument('--strategy', default='pyramiding_ma', choices=sorted(STRATEGY_METADATA.keys()))
-    parser.add_argument('--codes', nargs='+', default=['HK.03690'])
+    parser.add_argument('--codes', nargs='+', default=None)
     parser.add_argument('--start', required=True, help='开始日期，例如 2025-10-01')
     parser.add_argument('--end', required=True, help='结束日期，例如 2026-04-08')
-    parser.add_argument('--short-ma', type=int, default=5)
-    parser.add_argument('--long-ma', type=int, default=10)
-    parser.add_argument('--order-qty', type=int, default=100)
-    parser.add_argument('--max-position-per-stock', type=int, default=300)
+    parser.add_argument('--short-ma', type=int, default=None)
+    parser.add_argument('--long-ma', type=int, default=None)
+    parser.add_argument('--order-qty', type=int, default=None)
+    parser.add_argument('--max-position-per-stock', type=int, default=None)
+    parser.add_argument('--rsi-period', type=int, default=None)
+    parser.add_argument('--oversold', type=float, default=None)
+    parser.add_argument('--overbought', type=float, default=None)
+    parser.add_argument('--bollinger-period', type=int, default=None)
+    parser.add_argument('--stddev-multiplier', type=float, default=None)
+    parser.add_argument('--macd-fast', type=int, default=None)
+    parser.add_argument('--macd-slow', type=int, default=None)
+    parser.add_argument('--macd-signal', type=int, default=None)
+    parser.add_argument('--donchian-entry', type=int, default=None)
+    parser.add_argument('--donchian-exit', type=int, default=None)
+    parser.add_argument('--strategy-params-json', default=None, help='通用策略参数 JSON')
     parser.add_argument('--initial-cash', type=float, default=100000.0)
     parser.add_argument('--commission-rate', type=float, default=0.001)
     parser.add_argument('--slippage', type=float, default=0.0)
@@ -38,20 +49,35 @@ def parse_args():
 
 
 def build_strategy_kwargs(args):
-    kwargs = {
-        'codes': args.codes,
-        'short_ma': args.short_ma,
-        'long_ma': args.long_ma,
-        'order_qty': args.order_qty,
-    }
-    if args.strategy == 'pyramiding_ma':
-        kwargs['max_position_per_stock'] = args.max_position_per_stock
-    return kwargs
+    return resolve_strategy_params(
+        args.strategy,
+        {
+            **(json.loads(args.strategy_params_json) if args.strategy_params_json else {}),
+            'codes': args.codes,
+            'short_ma': args.short_ma,
+            'long_ma': args.long_ma,
+            'order_qty': args.order_qty,
+            'max_position_per_stock': args.max_position_per_stock,
+            'rsi_period': args.rsi_period,
+            'oversold': args.oversold,
+            'overbought': args.overbought,
+            'bollinger_period': args.bollinger_period,
+            'stddev_multiplier': args.stddev_multiplier,
+            'macd_fast': args.macd_fast,
+            'macd_slow': args.macd_slow,
+            'macd_signal': args.macd_signal,
+            'donchian_entry': args.donchian_entry,
+            'donchian_exit': args.donchian_exit,
+        },
+    )
 
 
 def run_backtest(args):
+    if not strategy_supports_backtest(args.strategy):
+        raise ValueError(f'策略 {args.strategy} 当前不支持回测')
     manager = StrategyManager()
-    signal = manager.load_signal(args.strategy, **build_strategy_kwargs(args))
+    strategy_kwargs = build_strategy_kwargs(args)
+    signal = manager.load_signal(args.strategy, **strategy_kwargs)
     provider = FutuHistoryDataProvider()
     bars_by_code = provider.fetch_many(
         signal.codes,
@@ -65,7 +91,7 @@ def run_backtest(args):
         commission_rate=args.commission_rate,
         slippage=args.slippage,
     )
-    return engine.run(bars_by_code), bars_by_code
+    return engine.run(bars_by_code), bars_by_code, strategy_kwargs
 
 
 def make_run(repository, strategy_name, config):
@@ -83,7 +109,7 @@ def snapshot(repository, service, run_id):
     }
 
 
-def replay_strategy_trades(backtest_result, args):
+def replay_strategy_trades(backtest_result, args, strategy_kwargs):
     with tempfile.TemporaryDirectory() as temp_dir:
         repository = RuntimeRepository(db_path=Path(temp_dir) / 'workflow.sqlite3')
         service = PositionService(repository)
@@ -92,11 +118,7 @@ def replay_strategy_trades(backtest_result, args):
             args.strategy,
             {
                 'strategy': args.strategy,
-                'codes': args.codes,
-                'short_ma': args.short_ma,
-                'long_ma': args.long_ma,
-                'order_qty': args.order_qty,
-                'max_position_per_stock': args.max_position_per_stock if args.strategy == 'pyramiding_ma' else None,
+                **strategy_kwargs,
                 'source': 'backtest_replay',
             },
         )
@@ -260,21 +282,17 @@ def build_chart_payload(code, bars, trades):
 
 
 def run_replay_validation(args):
-    backtest_result, bars_by_code = run_backtest(args)
-    workflow_result = replay_strategy_trades(backtest_result, args)
+    backtest_result, bars_by_code, strategy_kwargs = run_backtest(args)
+    workflow_result = replay_strategy_trades(backtest_result, args, strategy_kwargs)
     guardian_result = replay_guardian_exit(backtest_result, args)
-    code = args.codes[0]
+    code = strategy_kwargs['codes'][0]
 
     return {
         'input': {
             'strategy': args.strategy,
-            'codes': args.codes,
+            'strategyParams': strategy_kwargs,
             'start': args.start,
             'end': args.end,
-            'short_ma': args.short_ma,
-            'long_ma': args.long_ma,
-            'order_qty': args.order_qty,
-            'max_position_per_stock': args.max_position_per_stock if args.strategy == 'pyramiding_ma' else None,
         },
         'backtest': {
             'summary': backtest_result['summary'],
