@@ -2,6 +2,7 @@
 """FastAPI service for strategy management."""
 
 import os
+import json
 import signal
 import subprocess
 import threading
@@ -156,16 +157,13 @@ class StrategyRuntime:
 
     def _build_command(self, config: Dict) -> List[str]:
         cmd = ['python3', '-m', 'backend.cli.run_strategy', '--strategy', config['strategy']]
-        if config.get('codes'):
-            cmd.extend(['--codes', *config['codes']])
-        if config.get('short_ma') is not None:
-            cmd.extend(['--short-ma', str(config['short_ma'])])
-        if config.get('long_ma') is not None:
-            cmd.extend(['--long-ma', str(config['long_ma'])])
-        if config.get('order_qty') is not None:
-            cmd.extend(['--order-qty', str(config['order_qty'])])
-        if config.get('max_position_per_stock') is not None:
-            cmd.extend(['--max-position-per-stock', str(config['max_position_per_stock'])])
+        strategy_params = {
+            key: value
+            for key, value in config.items()
+            if key not in {'strategy', 'run_id', 'db_path'}
+        }
+        if strategy_params:
+            cmd.extend(['--strategy-params-json', json.dumps(strategy_params, ensure_ascii=False)])
         if config.get('run_id') is not None:
             cmd.extend(['--run-id', config['run_id']])
         if config.get('db_path') is not None:

@@ -65,7 +65,48 @@ class FakeOpenQuoteContext:
         return None
 
 
+class FakeOpenSecTradeContext:
+    def __init__(self, filter_trdmarket, host, port):
+        self.filter_trdmarket = filter_trdmarket
+        self.host = host
+        self.port = port
+
+    def get_acc_list(self):
+        return 0, FakeFrame([])
+
+    def set_handler(self, handler):
+        return 0
+
+    def accinfo_query(self, **kwargs):
+        return 0, FakeFrame([])
+
+    def position_list_query(self, **kwargs):
+        return 0, FakeFrame([])
+
+    def order_list_query(self, **kwargs):
+        return 0, FakeFrame([])
+
+    def deal_list_query(self, **kwargs):
+        return 0, FakeFrame([])
+
+    def place_order(self, **kwargs):
+        return 0, FakeFrame([{'order_id': 'test'}])
+
+    def close(self):
+        return None
+
+
 class FakeStockQuoteHandlerBase:
+    def on_recv_rsp(self, rsp_pb):
+        return 0, rsp_pb
+
+
+class FakeTradeOrderHandlerBase:
+    def on_recv_rsp(self, rsp_pb):
+        return 0, rsp_pb
+
+
+class FakeTradeDealHandlerBase:
     def on_recv_rsp(self, rsp_pb):
         return 0, rsp_pb
 
@@ -120,7 +161,7 @@ class StrategyTest(unittest.TestCase):
         cls.fake_signal_sender = types.ModuleType('signal_sender')
         cls.fake_signal_sender.calls = []
 
-        def send_signal(code, action, price, quantity, note=''):
+        def send_signal(code, action, price, quantity, note='', **kwargs):
             cls.fake_signal_sender.calls.append((code, action, price, quantity, note))
 
         def send_agent_message(message, log_prefix='消息'):
@@ -136,10 +177,20 @@ class StrategyTest(unittest.TestCase):
         futu.RET_OK = 0
         futu.RET_ERROR = -1
         futu.OpenQuoteContext = FakeOpenQuoteContext
+        futu.OpenSecTradeContext = FakeOpenSecTradeContext
         futu.StockQuoteHandlerBase = FakeStockQuoteHandlerBase
+        futu.TradeOrderHandlerBase = FakeTradeOrderHandlerBase
+        futu.TradeDealHandlerBase = FakeTradeDealHandlerBase
         futu.SubType = types.SimpleNamespace(K_DAY='K_DAY', QUOTE='QUOTE')
         futu.KLType = types.SimpleNamespace(K_DAY='K_DAY')
         futu.AuType = types.SimpleNamespace(QFQ='QFQ')
+        futu.TrdMarket = types.SimpleNamespace(HK='HK', US='US', CN='CN')
+        futu.TrdEnv = types.SimpleNamespace(SIMULATE='SIMULATE', REAL='REAL')
+        futu.TrdSide = types.SimpleNamespace(BUY='BUY', SELL='SELL')
+        futu.OrderType = types.SimpleNamespace(NORMAL='NORMAL', MARKET='MARKET', ABSOLUTE_LIMIT='ABSOLUTE_LIMIT', NONE='NONE')
+        futu.TimeInForce = types.SimpleNamespace(DAY='DAY')
+        futu.Session = types.SimpleNamespace(NONE='NONE')
+        futu.TrailType = types.SimpleNamespace(NONE='NONE')
 
         sys.modules['futu'] = futu
         sys.modules['backend.integrations.agent.signal_sender'] = cls.fake_signal_sender
@@ -148,9 +199,8 @@ class StrategyTest(unittest.TestCase):
         sys.path.insert(0, str(ROOT))
         os.environ['QTS_RUNTIME_DB_PATH'] = str(ROOT / 'backend' / 'data' / 'test-runtime.sqlite3')
         cls.signal_module = importlib.import_module('backend.strategies.signals.ma_signal')
+        cls.intraday_signal_module = importlib.import_module('backend.strategies.signals.intraday_signal')
         cls.runner_module = importlib.import_module('backend.strategies.runtime.realtime_runner')
-        cls.single_module = importlib.import_module('backend.strategies.runtime.single_position')
-        cls.pyramiding_module = importlib.import_module('backend.strategies.runtime.pyramiding')
         cls.manager_module = importlib.import_module('backend.services.strategy_manager')
         cls.position_service_module = importlib.import_module('backend.services.position_service')
         cls.api_module = importlib.import_module('backend.api.app')
@@ -158,6 +208,9 @@ class StrategyTest(unittest.TestCase):
 
     def setUp(self):
         self.fake_signal_sender.calls.clear()
+
+    def make_runtime(self, signal_class, **kwargs):
+        return self.runner_module.RealtimeStrategyRunner(signal_class=signal_class, **kwargs)
 
     def seed_history(self, strategy, code='HK.00700'):
         strategy.prices[code] = [10.0] * 19 + [9.0]
@@ -167,7 +220,7 @@ class StrategyTest(unittest.TestCase):
         return code
 
     def test_on_bar_appends_same_price_when_time_key_changes(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['SZ.000001'], short_ma=5, long_ma=10)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['SZ.000001'], short_ma=5, long_ma=10)
         strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-01 00:00:00', 'close': 10.94})
         strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-02 00:00:00', 'close': 10.94})
 
@@ -178,7 +231,7 @@ class StrategyTest(unittest.TestCase):
         )
 
     def test_on_bar_updates_last_value_when_time_key_repeats(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['SZ.000001'], short_ma=5, long_ma=10)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['SZ.000001'], short_ma=5, long_ma=10)
         strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-01 00:00:00', 'close': 10.94})
         strategy.on_bar({'code': 'SZ.000001', 'time_key': '2026-04-01 00:00:00', 'close': 10.99})
 
@@ -186,7 +239,7 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual(['2026-04-01 00:00:00'], strategy.bar_time_keys['SZ.000001'])
 
     def test_single_strategy_start_registers_quote_handler_and_subscriptions(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['HK.00700'], short_ma=5, long_ma=20)
 
         with mock.patch.object(self.runner_module.time, 'sleep', side_effect=KeyboardInterrupt):
             strategy.start()
@@ -199,7 +252,7 @@ class StrategyTest(unittest.TestCase):
         )
 
     def test_single_strategy_buy_creates_pending_only(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['HK.00700'], short_ma=5, long_ma=20)
         code = self.seed_history(strategy)
 
         strategy.on_quote({'code': code, 'last_price': 20.0})
@@ -209,7 +262,7 @@ class StrategyTest(unittest.TestCase):
         self.assertIn(code, strategy.pending_buys)
 
     def test_single_strategy_confirm_position_registers_monitor(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['HK.00700'], short_ma=5, long_ma=20)
         code = self.seed_history(strategy)
         strategy.pending_buys.add(code)
 
@@ -219,7 +272,7 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual(1, len(strategy.monitor.add_calls))
 
     def test_single_strategy_dead_cross_creates_pending_sell_only(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['HK.00700'], short_ma=5, long_ma=20)
         code = 'HK.00700'
         strategy.prices[code] = [10.0] * 19 + [11.0]
         strategy.bar_time_keys[code] = [f'2026-01-{idx + 1:02d} 00:00:00' for idx in range(20)]
@@ -233,9 +286,9 @@ class StrategyTest(unittest.TestCase):
         self.assertIn(code, strategy.pending_sells)
 
     def test_confirm_exit_clears_pending_sell_and_removes_position(self):
-        strategy = self.single_module.MaCrossStrategy(codes=['HK.00700'], short_ma=5, long_ma=20)
+        strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['HK.00700'], short_ma=5, long_ma=20)
         code = 'HK.00700'
-        strategy.pending_sells.add(code)
+        strategy.pending_sells[code] = 100
         strategy.monitor.positions[code] = {'qty': 100}
 
         strategy.confirm_exit(code=code, qty=100, exit_price=19.0)
@@ -263,7 +316,8 @@ class StrategyTest(unittest.TestCase):
                 },
             )
             repository.upsert_pending_order('run-test', 'HK.00700', 'SELL', 100)
-            strategy = self.single_module.MaCrossStrategy(
+            strategy = self.make_runtime(
+                self.signal_module.SinglePositionMaSignal,
                 codes=['HK.00700'],
                 short_ma=5,
                 long_ma=20,
@@ -297,7 +351,8 @@ class StrategyTest(unittest.TestCase):
             self.assertEqual(1, len(runtime.repository.list_strategy_positions('run-live')))
 
     def test_pyramiding_strategy_respects_max_position(self):
-        strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
+        strategy = self.make_runtime(
+            self.signal_module.PyramidingMaSignal,
             codes=['HK.00700'],
             short_ma=5,
             long_ma=20,
@@ -313,7 +368,8 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual([], self.fake_signal_sender.calls)
 
     def test_pyramiding_strategy_allows_incremental_buy_under_cap(self):
-        strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
+        strategy = self.make_runtime(
+            self.signal_module.PyramidingMaSignal,
             codes=['HK.00700'],
             short_ma=5,
             long_ma=20,
@@ -329,7 +385,8 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual(100, strategy.pending_buys[code])
 
     def test_pyramiding_confirm_position_reduces_pending_qty(self):
-        strategy = self.pyramiding_module.PyramidingMaCrossStrategy(
+        strategy = self.make_runtime(
+            self.signal_module.PyramidingMaSignal,
             codes=['HK.00700'],
             short_ma=5,
             long_ma=20,
@@ -348,9 +405,18 @@ class StrategyTest(unittest.TestCase):
         manager = self.manager_module.StrategyManager()
         strategy = manager.load_strategy('pyramiding_ma', codes=['HK.00700'], max_position_per_stock=400)
 
-        self.assertIsInstance(strategy, self.pyramiding_module.PyramidingMaCrossStrategy)
+        self.assertIsInstance(strategy, self.runner_module.RealtimeStrategyRunner)
+        self.assertIsInstance(strategy.signal, self.signal_module.PyramidingMaSignal)
         self.assertEqual(400, strategy.max_position_per_stock)
         self.assertIn('pyramiding_ma', manager.instances)
+
+    def test_strategy_manager_loads_intraday_strategy(self):
+        manager = self.manager_module.StrategyManager()
+        strategy = manager.load_strategy('intraday_breakout_test', codes=['HK.03690'], breakout_pct=0.01)
+
+        self.assertIsInstance(strategy, self.runner_module.RealtimeStrategyRunner)
+        self.assertIsInstance(strategy.signal, self.intraday_signal_module.IntradayBreakoutSignal)
+        self.assertAlmostEqual(0.01, strategy.signal.breakout_pct)
 
     def test_strategy_manager_loads_signal_for_backtest(self):
         manager = self.manager_module.StrategyManager()
@@ -359,6 +425,57 @@ class StrategyTest(unittest.TestCase):
         self.assertIsInstance(signal, self.signal_module.SinglePositionMaSignal)
         self.assertEqual(3, signal.short_ma_period)
         self.assertEqual(6, signal.long_ma_period)
+
+    def test_intraday_signal_generates_buy_then_sell(self):
+        signal = self.intraday_signal_module.IntradayBreakoutSignal(
+            codes=['HK.03690'],
+            order_qty=100,
+            breakout_pct=0.01,
+            pullback_pct=0.005,
+            entry_start_time='09:30:00',
+            flat_time='15:45:00',
+        )
+
+        buy = signal.evaluate_quote(
+            {
+                'code': 'HK.03690',
+                'last_price': 101.2,
+                'open_price': 100.0,
+                'prev_close_price': 99.8,
+                'data_date': '2026-04-13',
+                'data_time': '09:35:00',
+            },
+            position_qty=0,
+        )
+        self.assertEqual('BUY', buy['action'])
+        self.assertEqual(100, buy['qty'])
+
+        hold = signal.evaluate_quote(
+            {
+                'code': 'HK.03690',
+                'last_price': 102.0,
+                'open_price': 100.0,
+                'prev_close_price': 99.8,
+                'data_date': '2026-04-13',
+                'data_time': '10:00:00',
+            },
+            position_qty=100,
+        )
+        self.assertIsNone(hold['action'])
+
+        sell = signal.evaluate_quote(
+            {
+                'code': 'HK.03690',
+                'last_price': 101.3,
+                'open_price': 100.0,
+                'prev_close_price': 99.8,
+                'data_date': '2026-04-13',
+                'data_time': '10:05:00',
+            },
+            position_qty=100,
+        )
+        self.assertEqual('SELL', sell['action'])
+        self.assertEqual(100, sell['qty'])
 
     def test_backtest_engine_can_open_and_close_position(self):
         signal = self.signal_module.SinglePositionMaSignal(codes=['SZ.000001'], short_ma=2, long_ma=3, order_qty=100)
@@ -420,7 +537,8 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual([], result['trades'])
 
     def test_sync_runtime_state_skips_duplicate_writes(self):
-        strategy = self.single_module.MaCrossStrategy(
+        strategy = self.make_runtime(
+            self.signal_module.SinglePositionMaSignal,
             codes=['HK.00700'],
             short_ma=5,
             long_ma=20,

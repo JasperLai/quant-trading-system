@@ -46,14 +46,7 @@ export default function StrategyRunsPage() {
     setStrategies(data);
     if (data.length && !form.getFieldValue('strategyName')) {
       const defaultStrategy = data[0];
-      form.setFieldsValue({
-        strategyName: defaultStrategy.name,
-        codes: (defaultStrategy.params.codes || []).join(','),
-        shortMa: defaultStrategy.params.short_ma,
-        longMa: defaultStrategy.params.long_ma,
-        orderQty: defaultStrategy.params.order_qty,
-        maxPositionPerStock: defaultStrategy.params.max_position_per_stock,
-      });
+      form.setFieldsValue(buildStrategyFormDefaults(defaultStrategy));
     }
   }
 
@@ -83,28 +76,21 @@ export default function StrategyRunsPage() {
 
   useEffect(() => {
     if (!selectedStrategy) return;
-    form.setFieldsValue({
-      codes: (selectedStrategy.params.codes || []).join(','),
-      shortMa: selectedStrategy.params.short_ma,
-      longMa: selectedStrategy.params.long_ma,
-      orderQty: selectedStrategy.params.order_qty,
-      maxPositionPerStock: selectedStrategy.params.max_position_per_stock,
-    });
+    form.setFieldsValue(buildStrategyFormDefaults(selectedStrategy));
   }, [selectedStrategy, form]);
 
   async function handleStart(values) {
     setLoading(true);
     try {
+      const strategyParams = {};
+      (selectedStrategy?.param_fields || []).forEach((field) => {
+        const value = values[field.name];
+        if (value == null || value === '') return;
+        strategyParams[field.name] = value;
+      });
       await api.startRun({
         strategyName: values.strategyName,
-        codes: values.codes
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean),
-        shortMa: values.shortMa,
-        longMa: values.longMa,
-        orderQty: values.orderQty,
-        maxPositionPerStock: values.maxPositionPerStock,
+        strategyParams,
       });
       message.success('策略已启动');
       loadRuns();
@@ -236,23 +222,7 @@ export default function StrategyRunsPage() {
                   }))}
                 />
               </Form.Item>
-              <Form.Item name="codes" label="标的列表">
-                <Input placeholder="SZ.000001,HK.03690" />
-              </Form.Item>
-              <Form.Item name="shortMa" label="短期均线">
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item name="longMa" label="长期均线">
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item name="orderQty" label="单次下单数量">
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
-              {selectedStrategy?.name === 'pyramiding_ma' ? (
-                <Form.Item name="maxPositionPerStock" label="单标的最大仓位">
-                  <InputNumber min={1} style={{ width: '100%' }} />
-                </Form.Item>
-              ) : null}
+              {(selectedStrategy?.param_fields || []).map((field) => renderStrategyField(field))}
               <Divider />
               <Button type="primary" htmlType="submit" loading={loading}>
                 启动策略
@@ -276,5 +246,43 @@ export default function StrategyRunsPage() {
         <pre className="log-panel">{logModal.lines.join('\n')}</pre>
       </Modal>
     </div>
+  );
+}
+
+function buildStrategyFormDefaults(strategy) {
+  const params = strategy?.params || {};
+  const defaults = {
+    strategyName: strategy?.name,
+  };
+  (strategy?.param_fields || []).forEach((field) => {
+    const value = params[field.name];
+    defaults[field.name] = field.type === 'codes' && Array.isArray(value) ? value.join(',') : value;
+  });
+  return defaults;
+}
+
+function renderStrategyField(field) {
+  const rules = field.required ? [{ required: true, message: `请输入${field.label}` }] : [];
+
+  if (field.type === 'codes') {
+    return (
+      <Form.Item key={field.name} name={field.name} label={field.label} rules={rules}>
+        <Input placeholder={field.placeholder || 'SZ.000001,HK.03690'} />
+      </Form.Item>
+    );
+  }
+
+  if (field.type === 'number') {
+    return (
+      <Form.Item key={field.name} name={field.name} label={field.label} rules={rules}>
+        <InputNumber min={field.min} step={field.step || 1} style={{ width: '100%' }} />
+      </Form.Item>
+    );
+  }
+
+  return (
+    <Form.Item key={field.name} name={field.name} label={field.label} rules={rules}>
+      <Input placeholder={field.placeholder} />
+    </Form.Item>
   );
 }

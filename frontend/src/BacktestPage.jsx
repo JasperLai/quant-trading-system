@@ -267,9 +267,10 @@ export default function BacktestPage() {
       .listStrategies()
       .then((data) => {
         setStrategyLoadError('');
-        setStrategies(data);
-        if (data.length) {
-          form.setFieldsValue(normalizeStrategyDefaults(data[0]));
+        const supportedStrategies = data.filter((item) => item.supports_backtest !== false);
+        setStrategies(supportedStrategies);
+        if (supportedStrategies.length) {
+          form.setFieldsValue(normalizeStrategyDefaults(supportedStrategies[0]));
         }
       })
       .catch((error) => {

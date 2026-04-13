@@ -2,23 +2,22 @@
 """策略管理模块。"""
 
 import argparse
+import json
 
-from backend.strategies.runtime.pyramiding import PyramidingMaCrossStrategy
-from backend.strategies.runtime.single_position import MaCrossStrategy
+from backend.strategies.runtime.realtime_runner import RealtimeStrategyRunner
+from backend.strategies.signals.intraday_signal import IntradayBreakoutSignal
 from backend.strategies.signals.ma_signal import PyramidingMaSignal, SinglePositionMaSignal
 
 
 STRATEGY_REGISTRY = {
-    # 同一个策略名同时注册两套实现：
-    # 1. runtime_class: 用于实时运行，内部会连接 OpenD 并处理订阅/回调。
-    # 2. signal_class:  用于回测或纯逻辑测试，不依赖外部运行环境。
     'single_position_ma': {
-        'runtime_class': MaCrossStrategy,
         'signal_class': SinglePositionMaSignal,
     },
     'pyramiding_ma': {
-        'runtime_class': PyramidingMaCrossStrategy,
         'signal_class': PyramidingMaSignal,
+    },
+    'intraday_breakout_test': {
+        'signal_class': IntradayBreakoutSignal,
     },
 }
 
@@ -114,6 +113,66 @@ STRATEGY_METADATA = {
             },
         ],
     },
+    'intraday_breakout_test': {
+        'name': 'intraday_breakout_test',
+        'title': '日内突破测试策略',
+        'description': '以实时报价做日内突破买入与回撤/尾盘卖出，适合模拟盘全流程联调。',
+        'supports_backtest': False,
+        'params': {
+            'codes': ['HK.03690'],
+            'order_qty': 100,
+            'breakout_pct': 0.004,
+            'pullback_pct': 0.003,
+            'entry_start_time': '09:45:00',
+            'flat_time': '15:45:00',
+        },
+        'param_fields': [
+            {
+                'name': 'codes',
+                'label': '标的列表',
+                'type': 'codes',
+                'required': True,
+                'placeholder': 'HK.03690',
+            },
+            {
+                'name': 'order_qty',
+                'label': '单次下单数量',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+            {
+                'name': 'breakout_pct',
+                'label': '突破阈值',
+                'type': 'number',
+                'required': True,
+                'min': 0.0001,
+                'step': 0.0005,
+            },
+            {
+                'name': 'pullback_pct',
+                'label': '回撤卖出阈值',
+                'type': 'number',
+                'required': True,
+                'min': 0.0001,
+                'step': 0.0005,
+            },
+            {
+                'name': 'entry_start_time',
+                'label': '入场开始时间',
+                'type': 'text',
+                'required': True,
+                'placeholder': '09:45:00',
+            },
+            {
+                'name': 'flat_time',
+                'label': '日内平仓时间',
+                'type': 'text',
+                'required': True,
+                'placeholder': '15:45:00',
+            },
+        ],
+    },
 }
 
 
@@ -138,7 +197,11 @@ class StrategyManager:
     def load_strategy(self, name, **kwargs):
         if name not in self.registry:
             raise ValueError(f'未知策略: {name}. 可用策略: {", ".join(self.list_strategies())}')
-        strategy = self.registry[name]['runtime_class'](**kwargs)
+        strategy = RealtimeStrategyRunner(
+            signal_class=self.registry[name]['signal_class'],
+            strategy_name=name,
+            **kwargs,
+        )
         self.instances[name] = strategy
         return strategy
 
@@ -166,13 +229,18 @@ def parse_args():
     parser.add_argument('--long-ma', type=int, default=None, help='长期均线周期')
     parser.add_argument('--order-qty', type=int, default=None, help='单次下单数量')
     parser.add_argument('--max-position-per-stock', type=int, default=None, help='加仓策略的单标的最大仓位')
+    parser.add_argument('--breakout-pct', type=float, default=None, help='日内突破阈值')
+    parser.add_argument('--pullback-pct', type=float, default=None, help='日内回撤卖出阈值')
+    parser.add_argument('--entry-start-time', default=None, help='日内策略开始入场时间')
+    parser.add_argument('--flat-time', default=None, help='日内策略平仓时间')
+    parser.add_argument('--strategy-params-json', default=None, help='通用策略参数 JSON')
     parser.add_argument('--run-id', default=None, help='运行实例 ID，用于外部控制回调')
     parser.add_argument('--db-path', default=None, help='SQLite 数据库路径')
     return parser.parse_args()
 
 
 def build_strategy_kwargs(args):
-    kwargs = {}
+    kwargs = json.loads(args.strategy_params_json) if args.strategy_params_json else {}
     if args.codes:
         kwargs['codes'] = args.codes
     if args.short_ma is not None:
@@ -183,6 +251,14 @@ def build_strategy_kwargs(args):
         kwargs['order_qty'] = args.order_qty
     if args.max_position_per_stock is not None and args.strategy == 'pyramiding_ma':
         kwargs['max_position_per_stock'] = args.max_position_per_stock
+    if args.breakout_pct is not None:
+        kwargs['breakout_pct'] = args.breakout_pct
+    if args.pullback_pct is not None:
+        kwargs['pullback_pct'] = args.pullback_pct
+    if args.entry_start_time is not None:
+        kwargs['entry_start_time'] = args.entry_start_time
+    if args.flat_time is not None:
+        kwargs['flat_time'] = args.flat_time
     if args.run_id is not None:
         kwargs['run_id'] = args.run_id
     if args.db_path is not None:

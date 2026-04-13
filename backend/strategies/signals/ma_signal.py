@@ -23,6 +23,7 @@ class BaseMaSignal:
     """
 
     strategy_name = 'base_ma_cross'
+    requires_daily_bars = True
 
     def __init__(self, codes=CODES, short_ma=SHORT_MA, long_ma=LONG_MA, order_qty=DEFAULT_ORDER_QTY):
         self.codes = list(codes)
@@ -101,6 +102,37 @@ class BaseMaSignal:
         self.last_short_ma[code] = short_ma if short_ma else 0
         self.last_long_ma[code] = long_ma if long_ma else 0
         return short_ma, long_ma
+
+    def history_bar_count(self):
+        return self.long_ma_period + 5
+
+    def startup_lines(self):
+        return [
+            f"启动策略: {self.strategy_name}",
+            f"代码: {', '.join(self.codes)}",
+            f"短期均线周期: {self.short_ma_period}",
+            f"长期均线周期: {self.long_ma_period}",
+            f"单次下单数量: {self.order_qty}",
+        ]
+
+    def format_quote_log(self, result):
+        return "[报价] %s 实时价: %.2f | 短期MA(%s): %.2f | 长期MA(%s): %.2f" % (
+            result['code'],
+            result['price'],
+            self.short_ma_period,
+            result['short_ma'],
+            self.long_ma_period,
+            result['long_ma'],
+        )
+
+    def initial_state_lines(self):
+        lines = [f"当前均线状态: 短期MA({self.short_ma_period}) vs 长期MA({self.long_ma_period})"]
+        for code in self.codes:
+            lines.append(
+                "  %s: 短期MA(%s)=%.2f, 长期MA(%s)=%.2f"
+                % (code, self.short_ma_period, self.last_short_ma[code], self.long_ma_period, self.last_long_ma[code])
+            )
+        return lines
 
     def get_pending_buy_qty(self, code):
         raise NotImplementedError
