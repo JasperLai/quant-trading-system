@@ -110,15 +110,22 @@ flowchart LR
 - `bollinger_reversion`
 - `macd_trend`
 - `donchian_breakout`
-
-不支持当前回测模型的策略会在 metadata 中标记：
-
-- `supports_backtest = false`
-
-例如：
 - `intraday_breakout_test`
 
-其原因是当前回测引擎是基于日线收盘驱动，不适合日内纯报价策略。
+策略 metadata 还会声明：
+
+- `backtest_engine`
+  - `daily`
+  - `minute`
+  - `tick`
+- `backtest_ktype`
+  - 例如 `K_DAY`
+  - 例如 `K_1M`
+- `backtest_modes`
+  - 例如 `['daily']`
+  - 例如 `['minute', 'tick']`
+
+这样 `run_backtest.py` 和 `replay_validation.py` 会自动选择对应数据粒度和引擎。
 
 ### 4.3 BacktestEngine
 
@@ -154,7 +161,69 @@ flowchart TD
     L -- 否 --> C
 ```
 
-### 4.4 BacktestPortfolio
+### 4.4 MinuteBacktestEngine
+
+同文件：
+- [/Users/mubinlai/code/quant-trading-system/backtest/engine.py](/Users/mubinlai/code/quant-trading-system/backtest/engine.py)
+
+职责：
+
+1. 使用分钟 bar 驱动策略。
+2. 为日内策略构造更接近实时 quote 的 payload。
+3. 使用 bar 的 `high/low` 做分钟级兜底止损止盈检查。
+
+MinuteBacktestEngine 与日线引擎的核心差异：
+
+- 数据源默认由 strategy metadata 指向 `K_1M`
+- quote payload 会补全：
+  - `open_price`
+  - `prev_close_price`
+  - `data_date`
+  - `data_time`
+- 风控检查使用 bar 的 `high/low`，不只看 `close`
+
+这让 `intraday_breakout_test` 这类依赖日内时间窗口和 session 状态的策略，也能在回测中复用同一套 signal 逻辑。
+
+### 4.5 TickBacktestEngine
+
+同文件：
+- [/Users/mubinlai/code/quant-trading-system/backtest/engine.py](/Users/mubinlai/code/quant-trading-system/backtest/engine.py)
+
+职责：
+
+1. 使用逐笔 tick 事件驱动策略。
+2. 每笔 tick 都调用一次 `signal.evaluate_quote(...)`。
+3. 每笔 tick 后更新一次权益曲线。
+4. 适配“纯 quote 驱动”的日内策略。
+
+当前设计假设存在一个历史逐笔接口：
+
+- `get_history_ticker(code, start, end, page_req_key, max_count)`
+
+并且返回结构与 `get_rt_ticker()` 一致。对应数据提供器实现位于：
+- [/Users/mubinlai/code/quant-trading-system/backtest/data_provider.py](/Users/mubinlai/code/quant-trading-system/backtest/data_provider.py)
+
+需要强调：
+
+- 这是一套“接口存在时即可运行”的 tick 引擎设计。
+- 如果底层环境没有 `get_history_ticker()`，数据提供器会显式抛出 `NotImplementedError`。
+- 因此 TickBacktestEngine 当前是“引擎已落地，真实历史 tick 数据源仍依赖假设接口”的状态。
+
+### 4.6 回测模式选择
+
+CLI 入口支持：
+
+- `python3 backtest/run_backtest.py --backtest-mode daily`
+- `python3 backtest/run_backtest.py --backtest-mode minute`
+- `python3 backtest/run_backtest.py --backtest-mode tick`
+
+其中：
+
+- `daily` 对应 `BacktestEngine`
+- `minute` 对应 `MinuteBacktestEngine`
+- `tick` 对应 `TickBacktestEngine`
+
+### 4.7 BacktestPortfolio
 
 文件：
 - [/Users/mubinlai/code/quant-trading-system/backtest/portfolio.py](/Users/mubinlai/code/quant-trading-system/backtest/portfolio.py)
@@ -186,7 +255,7 @@ flowchart TD
 - `realized_pnl` 现在使用 `cost_basis_total` 计算，因此已包含买入佣金，不会把接近保本的单误判成盈利。
 - 当前 `sell()` 仍然只支持全平，不支持部分卖出。
 
-### 4.5 build_backtest_report
+### 4.8 build_backtest_report
 
 文件：
 - [/Users/mubinlai/code/quant-trading-system/backtest/report.py](/Users/mubinlai/code/quant-trading-system/backtest/report.py)
@@ -238,6 +307,29 @@ sequenceDiagram
     ENG->>PORT: buy/sell/evaluate_risk/mark_equity
     ENG-->>CLI: result
 ```
+
+### 4.3.1 MinuteBacktestEngine
+
+同文件：
+- [/Users/mubinlai/code/quant-trading-system/backtest/engine.py](/Users/mubinlai/code/quant-trading-system/backtest/engine.py)
+
+职责：
+
+1. 使用分钟 bar 驱动策略。
+2. 为日内策略构造更接近实时 quote 的 payload。
+3. 使用 bar 的 `high/low` 做分钟级兜底止损止盈检查。
+
+MinuteBacktestEngine 与日线引擎的核心差异：
+
+- 数据源默认由 strategy metadata 指向 `K_1M`
+- quote payload 会补全：
+  - `open_price`
+  - `prev_close_price`
+  - `data_date`
+  - `data_time`
+- 风控检查使用 bar 的 `high/low`，不只看 `close`
+
+这让 `intraday_breakout_test` 这类依赖日内时间窗口和 session 状态的策略，也能在回测中复用同一套 signal 逻辑。
 
 ### 5.2 流程回放数据流
 
@@ -583,4 +675,3 @@ sequenceDiagram
 - 默认只需要新增 signal 类
 - 注册 metadata
 - 如果支持日线回测，就能自动进入当前回测体系
-

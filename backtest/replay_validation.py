@@ -12,16 +12,25 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backtest.data_provider import FutuHistoryDataProvider
-from backtest.engine import BacktestEngine
+from backtest.engine import BacktestEngine, MinuteBacktestEngine, TickBacktestEngine
 from backend.core.config import TAKE_PROFIT_PCT
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
-from backend.services.strategy_manager import STRATEGY_METADATA, StrategyManager, resolve_strategy_params, strategy_supports_backtest
+from backend.services.strategy_manager import (
+    STRATEGY_METADATA,
+    StrategyManager,
+    get_backtest_engine_name,
+    get_backtest_modes,
+    get_backtest_ktype,
+    resolve_strategy_params,
+    strategy_supports_backtest,
+)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='回测信号 -> 业务流程回放验证')
     parser.add_argument('--strategy', default='pyramiding_ma', choices=sorted(STRATEGY_METADATA.keys()))
+    parser.add_argument('--backtest-mode', choices=['daily', 'minute', 'tick'], default=None)
     parser.add_argument('--codes', nargs='+', default=None)
     parser.add_argument('--start', required=True, help='开始日期，例如 2025-10-01')
     parser.add_argument('--end', required=True, help='结束日期，例如 2026-04-08')
@@ -39,6 +48,10 @@ def parse_args():
     parser.add_argument('--macd-signal', type=int, default=None)
     parser.add_argument('--donchian-entry', type=int, default=None)
     parser.add_argument('--donchian-exit', type=int, default=None)
+    parser.add_argument('--breakout-pct', type=float, default=None)
+    parser.add_argument('--pullback-pct', type=float, default=None)
+    parser.add_argument('--entry-start-time', default=None)
+    parser.add_argument('--flat-time', default=None)
     parser.add_argument('--strategy-params-json', default=None, help='通用策略参数 JSON')
     parser.add_argument('--initial-cash', type=float, default=100000.0)
     parser.add_argument('--commission-rate', type=float, default=0.001)
@@ -68,6 +81,10 @@ def build_strategy_kwargs(args):
             'macd_signal': args.macd_signal,
             'donchian_entry': args.donchian_entry,
             'donchian_exit': args.donchian_exit,
+            'breakout_pct': args.breakout_pct,
+            'pullback_pct': args.pullback_pct,
+            'entry_start_time': args.entry_start_time,
+            'flat_time': args.flat_time,
         },
     )
 
@@ -75,17 +92,31 @@ def build_strategy_kwargs(args):
 def run_backtest(args):
     if not strategy_supports_backtest(args.strategy):
         raise ValueError(f'策略 {args.strategy} 当前不支持回测')
+    if args.backtest_mode and args.backtest_mode not in get_backtest_modes(args.strategy):
+        raise ValueError(f'策略 {args.strategy} 不支持 {args.backtest_mode} 回测模式，可用模式: {", ".join(get_backtest_modes(args.strategy))}')
     manager = StrategyManager()
     strategy_kwargs = build_strategy_kwargs(args)
     signal = manager.load_signal(args.strategy, **strategy_kwargs)
     provider = FutuHistoryDataProvider()
-    bars_by_code = provider.fetch_many(
-        signal.codes,
-        start=args.start,
-        end=args.end,
-        use_cache=not args.no_cache,
-    )
-    engine = BacktestEngine(
+    engine_name = args.backtest_mode or get_backtest_engine_name(args.strategy)
+    if engine_name == 'tick':
+        bars_by_code = provider.fetch_many_tickers(
+            signal.codes,
+            start=args.start,
+            end=args.end,
+            use_cache=not args.no_cache,
+        )
+        engine_class = TickBacktestEngine
+    else:
+        bars_by_code = provider.fetch_many(
+            signal.codes,
+            start=args.start,
+            end=args.end,
+            ktype='K_1M' if engine_name == 'minute' else get_backtest_ktype(args.strategy),
+            use_cache=not args.no_cache,
+        )
+        engine_class = MinuteBacktestEngine if engine_name == 'minute' else BacktestEngine
+    engine = engine_class(
         signal=signal,
         initial_cash=args.initial_cash,
         commission_rate=args.commission_rate,

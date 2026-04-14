@@ -120,6 +120,22 @@ class BacktestPortfolio:
             return self.sell(code, price, time_key, 'TAKE_PROFIT')
         return None
 
+    def evaluate_risk_from_bar(self, code, high, low, close, time_key):
+        """
+        用 bar 的高低点做更接近日内语义的兜底风控。
+
+        如果同一根 bar 内同时触发止损和止盈，当前采用保守处理：
+        优先按止损成交，避免回测结果过于乐观。
+        """
+        pos = self.positions.get(code)
+        if pos is None:
+            return None
+        if low <= pos['stop']:
+            return self.sell(code, pos['stop'], time_key, 'STOP_LOSS')
+        if high >= pos['profit']:
+            return self.sell(code, pos['profit'], time_key, 'TAKE_PROFIT')
+        return self.evaluate_risk(code, close, time_key)
+
     def mark_equity(self, time_key, latest_prices):
         market_value = 0.0
         for code, pos in self.positions.items():

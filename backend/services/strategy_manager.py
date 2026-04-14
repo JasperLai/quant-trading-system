@@ -46,6 +46,8 @@ STRATEGY_METADATA = {
         'title': '单仓均线策略',
         'description': '单标的同一时间只允许一笔正式持仓，适合简单金叉买入模型。',
         'supports_backtest': True,
+        'backtest_engine': 'daily',
+        'backtest_ktype': 'K_DAY',
         'learning_notes': {
             'style': '趋势跟随',
             'entry': '短期均线上穿长期均线时买入。',
@@ -94,6 +96,8 @@ STRATEGY_METADATA = {
         'title': '有上限加仓均线策略',
         'description': '允许在仓位上限内继续加仓，并把待确认买单数量纳入仓位计算。',
         'supports_backtest': True,
+        'backtest_engine': 'daily',
+        'backtest_ktype': 'K_DAY',
         'learning_notes': {
             'style': '趋势跟随 + 分批建仓',
             'entry': '均线金叉时买入，只要总仓位未达到上限就允许继续加仓。',
@@ -150,6 +154,8 @@ STRATEGY_METADATA = {
         'title': 'RSI 反转策略',
         'description': '在超卖区等待 RSI 回升买入，在超买区卖出，适合均值回归型日线回测。',
         'supports_backtest': True,
+        'backtest_engine': 'daily',
+        'backtest_ktype': 'K_DAY',
         'learning_notes': {
             'style': '均值回归',
             'entry': 'RSI 从超卖区下方向上回穿阈值时买入。',
@@ -176,6 +182,8 @@ STRATEGY_METADATA = {
         'title': '布林带反转策略',
         'description': '价格跌出下轨后重新回到通道内买入，回归中轨时卖出。',
         'supports_backtest': True,
+        'backtest_engine': 'daily',
+        'backtest_ktype': 'K_DAY',
         'learning_notes': {
             'style': '波动带回归',
             'entry': '价格跌破布林下轨后重新站回通道内时买入。',
@@ -200,6 +208,8 @@ STRATEGY_METADATA = {
         'title': 'MACD 趋势策略',
         'description': '使用 MACD 金叉/死叉跟随趋势，适合中短期波段回测。',
         'supports_backtest': True,
+        'backtest_engine': 'daily',
+        'backtest_ktype': 'K_DAY',
         'learning_notes': {
             'style': '动量趋势',
             'entry': 'MACD 线上穿 Signal 线时买入。',
@@ -226,6 +236,8 @@ STRATEGY_METADATA = {
         'title': '唐奇安突破策略',
         'description': '突破前 N 日区间高点买入，跌破退出通道卖出，适合趋势突破回测。',
         'supports_backtest': True,
+        'backtest_engine': 'daily',
+        'backtest_ktype': 'K_DAY',
         'learning_notes': {
             'style': '区间突破',
             'entry': '价格突破过去 N 日最高价时买入。',
@@ -249,12 +261,15 @@ STRATEGY_METADATA = {
         'name': 'intraday_breakout_test',
         'title': '日内突破测试策略',
         'description': '以实时报价做日内突破买入与回撤/尾盘卖出，适合模拟盘全流程联调。',
-        'supports_backtest': False,
+        'supports_backtest': True,
+        'backtest_engine': 'minute',
+        'backtest_ktype': 'K_1M',
+        'backtest_modes': ['minute', 'tick'],
         'learning_notes': {
             'style': '日内测试',
             'entry': '09:45 之后向上突破参考价一定比例时买入。',
             'exit': '冲高回撤或尾盘强制平仓时卖出。',
-            'usage': '主要用来联调模拟盘流程，不适合作为现在这套日线回测模型的正式回测对象。',
+            'usage': '主要用来联调模拟盘流程，也可以在分钟级回测引擎上回放日内信号。',
         },
         'params': {
             'codes': ['HK.03690'],
@@ -443,6 +458,28 @@ def strategy_supports_backtest(strategy_name):
     if strategy_name not in STRATEGY_METADATA:
         raise ValueError(f'未知策略: {strategy_name}')
     return STRATEGY_METADATA[strategy_name].get('supports_backtest', True)
+
+
+def get_backtest_engine_name(strategy_name):
+    if strategy_name not in STRATEGY_METADATA:
+        raise ValueError(f'未知策略: {strategy_name}')
+    return STRATEGY_METADATA[strategy_name].get('backtest_engine', 'daily')
+
+
+def get_backtest_ktype(strategy_name):
+    if strategy_name not in STRATEGY_METADATA:
+        raise ValueError(f'未知策略: {strategy_name}')
+    return STRATEGY_METADATA[strategy_name].get('backtest_ktype', 'K_DAY')
+
+
+def get_backtest_modes(strategy_name):
+    if strategy_name not in STRATEGY_METADATA:
+        raise ValueError(f'未知策略: {strategy_name}')
+    metadata = STRATEGY_METADATA[strategy_name]
+    modes = metadata.get('backtest_modes')
+    if modes:
+        return list(modes)
+    return [metadata.get('backtest_engine', 'daily')]
 
 
 def build_strategy_kwargs(args):

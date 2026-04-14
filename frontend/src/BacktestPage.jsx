@@ -177,19 +177,23 @@ function KLineChart({ chart }) {
 
 function normalizeStrategyDefaults(strategy) {
   const params = strategy?.params || {};
-  return {
+  const defaults = {
     strategyName: strategy?.name,
-    codes: Array.isArray(params.codes) ? params.codes.join(',') : '',
-    short_ma: params.short_ma,
-    long_ma: params.long_ma,
-    order_qty: params.order_qty,
-    max_position_per_stock: params.max_position_per_stock,
     start: '2025-10-01',
     end: '2026-04-08',
     initialCash: 100000,
     commissionRate: 0.001,
     slippage: 0,
   };
+  (strategy?.param_fields || []).forEach((field) => {
+    const value = params[field.name];
+    if (field.type === 'codes') {
+      defaults[field.name] = Array.isArray(value) ? value.join(',') : '';
+      return;
+    }
+    defaults[field.name] = value;
+  });
+  return defaults;
 }
 
 function renderStrategyField(field) {
