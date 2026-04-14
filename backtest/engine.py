@@ -39,10 +39,12 @@ class BacktestEngine:
 
     def run(self, bars_by_code):
         latest_prices = {}
-        for event in self._iter_events(bars_by_code):
+        events = self._iter_events(bars_by_code)
+        for index, event in enumerate(events):
             code = event['code']
             time_key = event.get('time_key')
             close_price = event['close']
+            bought_on_bar = False
 
             self.signal.update_bar(event)
             latest_prices[code] = close_price
@@ -65,13 +67,22 @@ class BacktestEngine:
                 )
                 if bought:
                     self.signal.clear_pending_buy(code, decision['qty'])
+                    bought_on_bar = True
             elif decision and decision['action'] == 'SELL':
                 sold = self.portfolio.sell(code, close_price, time_key, decision['reason'])
                 if sold is not None:
                     self.signal.clear_pending_sell(code, decision['qty'])
 
-            self.portfolio.evaluate_risk(code, close_price, time_key)
-            self.portfolio.mark_equity(time_key, latest_prices)
+            # 日线回测里，当前 bar 收盘才形成信号，因此同一 bar 内不应再用同一个收盘价
+            # 立即触发刚刚买入仓位的止损/止盈。否则会出现“先买后止损”的不真实结果。
+            if not bought_on_bar:
+                self.portfolio.evaluate_risk(code, close_price, time_key)
+
+            next_time_key = events[index + 1].get('time_key') if index + 1 < len(events) else None
+            if next_time_key != time_key:
+                # 同一 time_key 下的所有标的都处理完之后，才记录一次权益。
+                # 否则会出现“同一天多条权益点，其中部分股票用新价、部分仍用旧价”的失真曲线。
+                self.portfolio.mark_equity(time_key, latest_prices)
 
         final_equity = self.portfolio.equity_curve[-1]['equity'] if self.portfolio.equity_curve else self.portfolio.cash
         result = {

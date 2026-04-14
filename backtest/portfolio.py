@@ -48,17 +48,21 @@ class BacktestPortfolio:
             total_qty = qty
             avg_entry = fill_price
             entry_time = time_key
+            total_cost_basis = total_cost
         else:
             total_qty = existing['qty'] + qty
             avg_entry = (
                 existing['entry'] * existing['qty'] + fill_price * qty
             ) / total_qty
             entry_time = existing.get('entry_time', time_key)
+            total_cost_basis = existing['cost_basis_total'] + total_cost
 
         self.cash -= total_cost
         self.positions[code] = {
             'qty': total_qty,
             'entry': avg_entry,
+            'cost_basis_total': round(total_cost_basis, 4),
+            'cost_basis_per_share': round(total_cost_basis / total_qty, 4),
             'entry_time': entry_time,
             'stop': round(avg_entry * (1 + stop_loss_pct), 4),
             'profit': round(avg_entry * (1 + take_profit_pct), 4),
@@ -89,7 +93,7 @@ class BacktestPortfolio:
         fill_price = price - self.slippage
         gross_amount = fill_price * qty
         commission = self._commission(gross_amount)
-        realized_pnl = gross_amount - commission - existing['entry'] * qty
+        realized_pnl = gross_amount - commission - existing['cost_basis_total']
         self.cash += gross_amount - commission
         self.positions.pop(code, None)
         trade = {

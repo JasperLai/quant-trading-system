@@ -397,13 +397,45 @@ def resolve_strategy_params(strategy_name, overrides=None):
     if strategy_name not in STRATEGY_METADATA:
         raise ValueError(f'未知策略: {strategy_name}')
     params = dict(STRATEGY_METADATA[strategy_name].get('params', {}))
+    field_defs = {field['name']: field for field in STRATEGY_METADATA[strategy_name].get('param_fields', [])}
     for key, value in (overrides or {}).items():
         if value is None:
             continue
-        if key == 'codes' and isinstance(value, str):
-            params[key] = [item.strip() for item in value.split(',') if item.strip()]
-        else:
-            params[key] = value
+        field = field_defs.get(key)
+        if key == 'codes':
+            if isinstance(value, str):
+                normalized = [item.strip() for item in value.split(',') if item.strip()]
+            elif isinstance(value, (list, tuple)):
+                normalized = [str(item).strip() for item in value if str(item).strip()]
+            else:
+                raise ValueError(f'策略参数 {key} 类型错误，期望代码列表')
+            if field and field.get('required') and not normalized:
+                raise ValueError(f'策略参数 {key} 不能为空')
+            params[key] = normalized
+            continue
+
+        if field and field.get('type') == 'number':
+            try:
+                if isinstance(value, bool):
+                    raise ValueError
+                normalized = float(value) if any(token in str(value) for token in ['.', 'e', 'E']) else int(value)
+            except (TypeError, ValueError):
+                raise ValueError(f'策略参数 {key} 类型错误，期望数值') from None
+            if 'min' in field and normalized < field['min']:
+                raise ValueError(f'策略参数 {key} 不能小于 {field["min"]}')
+            if 'max' in field and normalized > field['max']:
+                raise ValueError(f'策略参数 {key} 不能大于 {field["max"]}')
+            params[key] = normalized
+            continue
+
+        if field and field.get('type') == 'text':
+            normalized = str(value).strip()
+            if field.get('required') and not normalized:
+                raise ValueError(f'策略参数 {key} 不能为空')
+            params[key] = normalized
+            continue
+
+        params[key] = value
     return params
 
 

@@ -426,6 +426,83 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual(3, signal.short_ma_period)
         self.assertEqual(6, signal.long_ma_period)
 
+    def test_resolve_strategy_params_validates_number_type(self):
+        with self.assertRaises(ValueError):
+            self.manager_module.resolve_strategy_params('single_position_ma', {'short_ma': 'abc'})
+
+    def test_backtest_engine_skips_risk_check_on_same_bar_buy(self):
+        class BuyOnceSignal:
+            strategy_name = 'buy_once'
+
+            def __init__(self):
+                self.called = False
+
+            def update_bar(self, event):
+                return event
+
+            def evaluate_quote(self, quote_data, position_qty=0):
+                if not self.called:
+                    self.called = True
+                    return {'action': 'BUY', 'qty': 100, 'reason': 'test buy'}
+                return None
+
+            def clear_pending_buy(self, code, qty=None):
+                return None
+
+            def clear_pending_sell(self, code, qty=None):
+                return None
+
+        engine = self.backtest_engine_module.BacktestEngine(
+            signal=BuyOnceSignal(),
+            initial_cash=100000.0,
+            commission_rate=0.0,
+            slippage=0.0,
+        )
+        result = engine.run(
+            {
+                'HK.03690': [
+                    {
+                        'time_key': '2026-01-01 00:00:00',
+                        'open': 100.0,
+                        'high': 100.0,
+                        'low': 100.0,
+                        'close': 100.0,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(1, result['summary']['trade_count'])
+        self.assertEqual('BUY', result['trades'][0]['side'])
+        self.assertIn('HK.03690', result['open_positions'])
+
+    def test_backtest_equity_curve_records_once_per_time_key(self):
+        signal = self.signal_module.SinglePositionMaSignal(codes=['HK.00700', 'HK.09988'], short_ma=2, long_ma=3, order_qty=100)
+        bars = {
+            'HK.00700': [
+                {'time_key': '2026-01-01 00:00:00', 'open': 10, 'high': 10, 'low': 10, 'close': 10},
+                {'time_key': '2026-01-02 00:00:00', 'open': 11, 'high': 11, 'low': 11, 'close': 11},
+            ],
+            'HK.09988': [
+                {'time_key': '2026-01-01 00:00:00', 'open': 20, 'high': 20, 'low': 20, 'close': 20},
+                {'time_key': '2026-01-02 00:00:00', 'open': 21, 'high': 21, 'low': 21, 'close': 21},
+            ],
+        }
+        result = self.backtest_engine_module.BacktestEngine(
+            signal=signal,
+            initial_cash=100000.0,
+            commission_rate=0.0,
+            slippage=0.0,
+        ).run(bars)
+        self.assertEqual(2, len(result['equity_curve']))
+        self.assertEqual(['2026-01-01 00:00:00', '2026-01-02 00:00:00'], [item['time'] for item in result['equity_curve']])
+
+    def test_backtest_realized_pnl_includes_buy_commission(self):
+        portfolio = self.backtest_engine_module.BacktestPortfolio(initial_cash=100000.0, commission_rate=0.001, slippage=0.0)
+        self.assertTrue(portfolio.buy('HK.03690', qty=100, price=10.0, time_key='2026-01-01 00:00:00', reason='BUY'))
+        trade = portfolio.sell('HK.03690', price=10.02, time_key='2026-01-02 00:00:00', reason='SELL')
+        self.assertIsNotNone(trade)
+        self.assertLess(trade['realized_pnl'], 0)
+
     def test_intraday_signal_generates_buy_then_sell(self):
         signal = self.intraday_signal_module.IntradayBreakoutSignal(
             codes=['HK.03690'],
