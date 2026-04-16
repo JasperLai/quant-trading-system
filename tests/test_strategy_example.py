@@ -261,6 +261,45 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual([], strategy.monitor.add_calls)
         self.assertIn(code, strategy.pending_buys)
 
+    def test_direct_execution_mode_places_order_without_agent_signal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_module = importlib.import_module('backend.repositories.runtime_repository')
+            repository = repository_module.RuntimeRepository(db_path=Path(temp_dir) / 'runtime.sqlite3')
+            repository.upsert_run('run-direct', 'single_position_ma', {}, 1234, 'running')
+            strategy = self.make_runtime(
+                self.signal_module.SinglePositionMaSignal,
+                codes=['HK.00700'],
+                short_ma=5,
+                long_ma=20,
+                execution_mode='direct',
+                run_id='run-direct',
+                db_path=Path(temp_dir) / 'runtime.sqlite3',
+            )
+            code = self.seed_history(strategy)
+
+            with mock.patch.object(strategy.trading_service, 'place_order', return_value={'order_id': 'ord-1', 'order_status': 'SUBMITTED'}) as mocked_place_order:
+                strategy.on_quote({'code': code, 'last_price': 20.0})
+
+            mocked_place_order.assert_called_once()
+            self.assertEqual([], self.fake_signal_sender.calls)
+            self.assertIn(code, strategy.pending_buys)
+
+    def test_agent_execution_mode_keeps_sending_signal(self):
+        strategy = self.make_runtime(
+            self.signal_module.SinglePositionMaSignal,
+            codes=['HK.00700'],
+            short_ma=5,
+            long_ma=20,
+            execution_mode='agent',
+        )
+        code = self.seed_history(strategy)
+
+        with mock.patch.object(strategy.trading_service, 'place_order') as mocked_place_order:
+            strategy.on_quote({'code': code, 'last_price': 20.0})
+
+        mocked_place_order.assert_not_called()
+        self.assertEqual(1, len(self.fake_signal_sender.calls))
+
     def test_single_strategy_confirm_position_registers_monitor(self):
         strategy = self.make_runtime(self.signal_module.SinglePositionMaSignal, codes=['HK.00700'], short_ma=5, long_ma=20)
         code = self.seed_history(strategy)
@@ -417,6 +456,17 @@ class StrategyTest(unittest.TestCase):
         self.assertIsInstance(strategy, self.runner_module.RealtimeStrategyRunner)
         self.assertIsInstance(strategy.signal, self.intraday_signal_module.IntradayBreakoutSignal)
         self.assertAlmostEqual(0.01, strategy.signal.breakout_pct)
+
+    def test_strategy_manager_rejects_direct_mode_without_runtime_identity(self):
+        manager = self.manager_module.StrategyManager()
+        with self.assertRaisesRegex(ValueError, 'run_id 和 db_path'):
+            manager.load_strategy(
+                'single_position_ma',
+                codes=['HK.00700'],
+                short_ma=5,
+                long_ma=20,
+                execution_mode='direct',
+            )
 
     def test_strategy_manager_loads_signal_for_backtest(self):
         manager = self.manager_module.StrategyManager()

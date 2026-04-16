@@ -356,6 +356,7 @@ class StrategyManager:
     def load_strategy(self, name, **kwargs):
         if name not in self.registry:
             raise ValueError(f'未知策略: {name}. 可用策略: {", ".join(self.list_strategies())}')
+        validate_runtime_kwargs(kwargs)
         strategy = RealtimeStrategyRunner(
             signal_class=self.registry[name]['signal_class'],
             strategy_name=name,
@@ -383,6 +384,7 @@ class StrategyManager:
 def parse_args():
     parser = argparse.ArgumentParser(description='策略管理器')
     parser.add_argument('--strategy', default='single_position_ma', choices=sorted(STRATEGY_REGISTRY.keys()), help='要启动的策略名称')
+    parser.add_argument('--execution-mode', default='agent', choices=['agent', 'direct'], help='执行模式：agent 或 direct')
     parser.add_argument('--codes', nargs='+', default=None, help='股票列表，如 SZ.000001 HK.03690')
     parser.add_argument('--short-ma', type=int, default=None, help='短期均线周期')
     parser.add_argument('--long-ma', type=int, default=None, help='长期均线周期')
@@ -512,7 +514,17 @@ def build_strategy_kwargs(args):
         kwargs['run_id'] = args.run_id
     if args.db_path is not None:
         kwargs['db_path'] = args.db_path
+    kwargs['execution_mode'] = args.execution_mode
+    validate_runtime_kwargs(kwargs)
     return kwargs
+
+
+def validate_runtime_kwargs(kwargs):
+    execution_mode = (kwargs.get('execution_mode') or 'agent').lower()
+    if execution_mode != 'direct':
+        return
+    if not kwargs.get('run_id') or not kwargs.get('db_path'):
+        raise ValueError('直连执行模式要求同时提供 run_id 和 db_path，用于成交回报自动落账')
 
 
 def main():

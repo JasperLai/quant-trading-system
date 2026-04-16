@@ -77,7 +77,7 @@ export default function StrategyRunsPage() {
 
   useEffect(() => {
     if (!selectedStrategy) return;
-    form.setFieldsValue(buildStrategyFormDefaults(selectedStrategy));
+    form.setFieldsValue(buildStrategyFormDefaults(selectedStrategy, form.getFieldValue('executionMode')));
   }, [selectedStrategy, form]);
 
   async function handleStart(values) {
@@ -91,6 +91,7 @@ export default function StrategyRunsPage() {
       });
       await api.startRun({
         strategyName: values.strategyName,
+        executionMode: values.executionMode,
         strategyParams,
       });
       message.success('策略已启动');
@@ -150,6 +151,15 @@ export default function StrategyRunsPage() {
       title: '标的',
       key: 'codes',
       render: (_, record) => (record.config.codes || []).join(', '),
+    },
+    {
+      title: '执行方式',
+      key: 'executionMode',
+      render: (_, record) => (
+        <Tag color={record.config.execution_mode === 'direct' ? 'blue' : 'gold'}>
+          {record.config.execution_mode === 'direct' ? '直连执行' : 'Agent执行'}
+        </Tag>
+      ),
     },
     {
       title: '操作',
@@ -224,6 +234,14 @@ export default function StrategyRunsPage() {
                     }))}
                   />
                 </Form.Item>
+                <Form.Item name="executionMode" label="执行方式" rules={[{ required: true }]}>
+                  <Select
+                    options={[
+                      { label: 'Agent执行', value: 'agent' },
+                      { label: '直连执行', value: 'direct' },
+                    ]}
+                  />
+                </Form.Item>
                 {(selectedStrategy?.param_fields || []).map((field) => renderStrategyField(field))}
                 <Divider />
                 <Button type="primary" htmlType="submit" loading={loading}>
@@ -276,10 +294,11 @@ export default function StrategyRunsPage() {
   );
 }
 
-function buildStrategyFormDefaults(strategy) {
+function buildStrategyFormDefaults(strategy, executionMode = 'agent') {
   const params = strategy?.params || {};
   const defaults = {
     strategyName: strategy?.name,
+    executionMode,
   };
   (strategy?.param_fields || []).forEach((field) => {
     const value = params[field.name];

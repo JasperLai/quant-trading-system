@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from backtest.replay_validation import run_replay_validation
 from backend.core.config import LOG_DIR, RUNTIME_DB_PATH
@@ -37,6 +37,7 @@ class StartStrategyRequest(BaseModel):
 
     strategy_name: str = Field(..., alias='strategyName')
     strategy_params: Dict[str, Any] = Field(default_factory=dict, alias='strategyParams')
+    execution_mode: Literal['agent', 'direct'] = Field('agent', alias='executionMode')
     codes: Optional[List[str]] = None
     short_ma: Optional[int] = Field(None, alias='shortMa')
     long_ma: Optional[int] = Field(None, alias='longMa')
@@ -152,10 +153,12 @@ class StrategyRuntime:
         strategy_params = {
             key: value
             for key, value in config.items()
-            if key not in {'strategy', 'run_id', 'db_path'}
+            if key not in {'strategy', 'run_id', 'db_path', 'execution_mode'}
         }
         if strategy_params:
             cmd.extend(['--strategy-params-json', json.dumps(strategy_params, ensure_ascii=False)])
+        if config.get('execution_mode') is not None:
+            cmd.extend(['--execution-mode', config['execution_mode']])
         if config.get('run_id') is not None:
             cmd.extend(['--run-id', config['run_id']])
         if config.get('db_path') is not None:
@@ -210,6 +213,7 @@ class StrategyRuntime:
             },
         )
         config['strategy'] = request.strategy_name
+        config['execution_mode'] = request.execution_mode
 
         run_id = uuid.uuid4().hex[:8]
         log_path = LOG_DIR / f'{run_id}.log'

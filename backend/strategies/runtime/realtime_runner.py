@@ -25,6 +25,7 @@ from backend.integrations.futu.quote_gateway import FutuQuoteGateway
 from backend.monitoring.position_monitor import PositionMonitor
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
+from backend.services.trading_service import TradingService
 
 logger = get_logger(__name__)
 
@@ -76,7 +77,17 @@ class RealtimeStrategyRunner:
     strategy_name = 'realtime_strategy'
     signal_class = None
 
-    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT, run_id=None, db_path=None, signal_class=None, strategy_name=None, **signal_kwargs):
+    def __init__(
+        self,
+        host=DEFAULT_HOST,
+        port=DEFAULT_PORT,
+        run_id=None,
+        db_path=None,
+        signal_class=None,
+        strategy_name=None,
+        execution_mode='agent',
+        **signal_kwargs,
+    ):
         if signal_class is not None:
             self.signal_class = signal_class
         if strategy_name is not None:
@@ -95,8 +106,10 @@ class RealtimeStrategyRunner:
         self.monitor = PositionMonitor()
         self.quote_handler = QuoteHandler(self)
         self.run_id = run_id
+        self.execution_mode = (execution_mode or 'agent').lower()
         self.repository = RuntimeRepository(db_path=db_path) if run_id else None
         self.position_service = PositionService(self.repository) if self.repository is not None else None
+        self.trading_service = TradingService(repository=self.repository, position_service=self.position_service, host=host, port=port)
         # 通过签名避免每次 quote 都重复写相同的 pending 状态。
         self._last_runtime_state_signature = None
         self._last_repository_refresh_ts = 0.0
@@ -126,6 +139,7 @@ class RealtimeStrategyRunner:
             f"启动策略: {self.strategy_name}",
             f"代码: {', '.join(self.codes)}",
             f"单次下单数量: {self.order_qty}",
+            f"执行模式: {self.execution_mode}",
         ]
         if getattr(self.signal, 'short_ma_period', 0) and getattr(self.signal, 'long_ma_period', 0):
             lines.extend(
@@ -306,6 +320,21 @@ class RealtimeStrategyRunner:
         这里不直接调用 broker，下单动作由 agent 通过我们的交易 API 执行。
         """
         logger.info("🟢 策略信号！买入 %s @ %s | 原因: %s", code, price, reason)
+        if self.execution_mode == 'direct':
+            order = self.trading_service.place_order(
+                code=code,
+                qty=qty,
+                price=price,
+                side='BUY',
+                market=self.trading_service.normalize_market('', code=code),
+                trd_env='SIMULATE',
+                order_type='NORMAL',
+                run_id=self.run_id,
+                source='strategy',
+                note=reason,
+            )
+            logger.info("🟢 直连下单已提交: %s order_id=%s status=%s", code, order.get('order_id'), order.get('order_status'))
+            return
         send_signal(
             code,
             'BUY',
@@ -321,6 +350,21 @@ class RealtimeStrategyRunner:
     def on_sell_signal(self, code, price, qty, reason):
         """把策略 SELL 意图发给 agent。"""
         logger.info("🔴 策略信号！卖出 %s @ %s | 原因: %s", code, price, reason)
+        if self.execution_mode == 'direct':
+            order = self.trading_service.place_order(
+                code=code,
+                qty=qty,
+                price=price,
+                side='SELL',
+                market=self.trading_service.normalize_market('', code=code),
+                trd_env='SIMULATE',
+                order_type='NORMAL',
+                run_id=self.run_id,
+                source='strategy',
+                note=reason,
+            )
+            logger.info("🔴 直连下单已提交: %s order_id=%s status=%s", code, order.get('order_id'), order.get('order_status'))
+            return
         send_signal(
             code,
             'SELL',

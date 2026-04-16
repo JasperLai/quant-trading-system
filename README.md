@@ -2,10 +2,21 @@
 
 基于富途 OpenD 的半自动量化交易系统。
 
-当前实现不是“策略直接下单”，而是这条链路：
+当前实现支持两种执行模式：
+
+- `agent`：策略发结构化信号给 agent，由 agent 调用后端交易 API 下单
+- `direct`：策略子进程直接调用后端交易服务下单，适合本机无 agent 的联调场景
+
+`agent` 模式链路：
 
 ```text
 OpenD 行情 -> Python 策略子进程 -> agent 信号 -> agent 执行下单 -> 成交确认 API -> PositionService -> SQLite 状态同步
+```
+
+`direct` 模式链路：
+
+```text
+OpenD 行情 -> Python 策略子进程 -> TradingService 下单 -> OpenD 交易回报 / 订单同步 -> PositionService -> SQLite 状态同步
 ```
 
 系统支持两类运行形态：
@@ -117,14 +128,15 @@ quant-trading-system/
    - `QUOTE` 用于盘中实时判断
 3. 纯信号层根据“日线样本 + 最新报价”计算短期/长期 MA。
 4. 策略发出 `BUY` / `SELL` 交易意图。
-5. `signal_sender` 将意图发给 agent。
-6. agent 实际交易成功后调用确认接口。
-7. FastAPI 主进程中的 `PositionService` 直接更新 SQLite：
+5. 根据执行模式：
+   - `agent`：`signal_sender` 将意图发给 agent
+   - `direct`：运行器直接调用 `TradingService.place_order(...)`
+6. 后端基于 OpenD 交易回报和订单同步自动更新 SQLite：
    - `strategy_positions`
    - `account_positions`
    - `pending_orders`
    - `executions`
-8. 子进程在后续报价处理中从数据库读取最新持仓与 pending 状态。
+7. 子进程在后续报价处理中从数据库读取最新持仓与 pending 状态。
 
 ### 回测
 
@@ -202,6 +214,7 @@ npm run dev
 ```bash
 python3 -m backend.cli.run_strategy \
   --strategy single_position_ma \
+  --execution-mode agent \
   --codes SZ.000001 \
   --short-ma 5 \
   --long-ma 20 \
@@ -213,12 +226,33 @@ python3 -m backend.cli.run_strategy \
 ```bash
 python3 -m backend.cli.run_strategy \
   --strategy pyramiding_ma \
+  --execution-mode agent \
   --codes HK.03690 \
   --short-ma 5 \
   --long-ma 20 \
   --order-qty 100 \
   --max-position-per-stock 300
 ```
+
+本机无 agent 联调时，可用直连执行模式：
+
+```bash
+python3 -m backend.cli.run_strategy \
+  --strategy intraday_breakout_test \
+  --execution-mode direct \
+  --run-id localtest01 \
+  --db-path backend/data/runtime.sqlite3 \
+  --codes HK.03690 \
+  --order-qty 100 \
+  --breakout-pct 0.0015 \
+  --pullback-pct 0.0015 \
+  --entry-start-time 09:45:00 \
+  --flat-time 15:45:00
+```
+
+注意：
+- `direct` 模式必须同时提供 `run_id` 和 `db_path`
+- 否则成交回报无法关联回策略实例，系统会直接拒绝启动
 
 ### 5. 运行回测
 
@@ -257,6 +291,11 @@ python3 backtest/run_backtest.py \
 - `POST /api/runs/{run_id}/confirm-buy`
 - `POST /api/runs/{run_id}/confirm-sell`
 - `POST /api/accounts/{account_id}/confirm-sell`
+
+`POST /api/runs` 现在支持执行模式：
+
+- `executionMode = "agent"`
+- `executionMode = "direct"`
 
 详细请求体和返回示例见：
 

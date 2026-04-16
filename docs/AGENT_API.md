@@ -4,6 +4,13 @@
 
 本文档面向负责执行交易的 agent。
 
+注意：系统现在支持两种策略执行模式：
+
+- `agent`：策略把交易意图发给 agent，由 agent 调用交易 API
+- `direct`：策略直接调用后端交易服务，不经过 agent
+
+本文档主要描述 `agent` 模式下的对接要求。
+
 目标：
 
 1. 查询可用策略
@@ -50,6 +57,8 @@ http://127.0.0.1:8000
 #### 交易信号协议
 
 策略或 guardian 发给 agent 的消息中，会携带一段 `signal_payload=...` JSON。
+
+仅当策略运行在 `agent` 模式时，agent 才会收到这类信号。
 
 agent 应按其中的 `execution` 字段执行：
 
@@ -135,6 +144,7 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `strategyName` | string | 是 | 策略名 |
+| `executionMode` | string | 否 | `agent` 或 `direct`，默认 `agent` |
 | `codes` | string[] | 否 | 标的列表 |
 | `shortMa` | integer | 否 | 短期均线周期 |
 | `longMa` | integer | 否 | 长期均线周期 |
@@ -146,6 +156,7 @@ Content-Type: application/json
 ```json
 {
   "strategyName": "pyramiding_ma",
+  "executionMode": "agent",
   "codes": ["HK.03690"],
   "shortMa": 5,
   "longMa": 20,
@@ -153,6 +164,12 @@ Content-Type: application/json
   "maxPositionPerStock": 300
 }
 ```
+
+说明：
+
+- `agent` 模式：策略会向 agent 发结构化信号，agent 负责调用 `/api/trading/orders`
+- `direct` 模式：策略不会再向 agent 发信号，而是由策略进程直接下单
+- `direct` 模式要求后端为该实例生成并传入 `run_id` 与 `db_path`，否则运行器会拒绝启动
 
 响应示例：
 

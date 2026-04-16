@@ -23,6 +23,7 @@
 3. 将“交易意图”和“成交事实”分离，避免未成交订单被误登记为持仓。
 4. 将持仓事实统一收敛到数据库，避免主进程和子进程分别维护两套账。
 5. 将兜底风控从策略子进程剥离，使策略停止后已有仓位仍可持续监控。
+6. 支持 `agent` 与 `direct` 两种执行模式，但保持统一的成交落账路径。
 
 ## 3. 总体架构
 
@@ -37,12 +38,14 @@ flowchart LR
     RT --> OD["Futu OpenD"]
     RT --> SG["MA Signal"]
     RT --> SS["Signal Sender"]
+    RT --> TS["TradingService"]
     RT --> REPO
     PG --> OD
     PG --> SS
     PS --> REPO
     SS --> AG["Agent / openclaw"]
     AG --> API
+    TS --> API
 ```
 
 核心原则：
@@ -68,9 +71,8 @@ flowchart LR
 
 关键设计：
 
-- `STRATEGY_REGISTRY` 同时维护：
-  - `runtime_class`
-  - `signal_class`
+- `STRATEGY_REGISTRY` 只维护 `signal_class`
+- 实时运行统一由 `RealtimeStrategyRunner` 这个通用 runtime adapter 承接
 - `STRATEGY_METADATA` 供前端和 API 展示策略说明与默认参数。
 
 ### 4.2 纯信号层
@@ -113,7 +115,9 @@ flowchart LR
 2. 订阅 `K_DAY` 和 `QUOTE`。
 3. 初始化历史日线样本。
 4. 将报价回调转交给 `ma_signal`。
-5. 发出标准化 `BUY` / `SELL` 意图给 agent。
+5. 根据执行模式处理标准化 `BUY` / `SELL` 意图：
+   - `agent`：发送给 agent
+   - `direct`：直接调用 `TradingService`
 6. 从数据库读取：
    - `strategy_positions`
    - `pending_orders`
@@ -122,6 +126,7 @@ flowchart LR
 
 - 运行器不再负责正式成交落账。
 - `confirm_position()` / `confirm_exit()` 仅保留给兼容测试和极简离线场景。
+- `direct` 模式必须具备 `run_id + db_path`，否则交易回报无法自动映射回策略实例。
 
 ### 4.4 PositionService
 
@@ -169,7 +174,28 @@ flowchart LR
 
 它不关心策略细节，只关心如何将标准信号发给外部执行层。
 
-### 4.7 Repository 层
+注意：
+
+- 仅当策略配置为 `agent` 模式时，这个组件才参与主流程。
+- `direct` 模式下不会经过 `SignalSender`。
+
+### 4.7 TradingService
+
+文件：
+- `/Users/mubinlai/code/quant-trading-system/backend/services/trading_service.py`
+
+职责：
+
+1. 调用 FUTU/OpenD 交易接口下单。
+2. 记录 `trade_orders` / `trade_deals`。
+3. 结合交易推送和订单同步，将成交事实交给 `PositionService` 落账。
+
+说明：
+
+- 在 `direct` 模式下，`RealtimeStrategyRunner` 会直接调用它。
+- 在 `agent` 模式下，agent 仍通过 `/api/trading/orders` 间接使用同一套交易服务。
+
+### 4.8 Repository 层
 
 文件：
 - `/Users/mubinlai/code/quant-trading-system/backend/repositories/runtime_repository.py`
@@ -273,13 +299,19 @@ guardian 独立订阅 `account_positions` 中涉及的标的报价。
 sequenceDiagram
     participant RT as Realtime Runner
     participant AG as Agent
+    participant TS as TradingService
     participant API as FastAPI
     participant PS as PositionService
     participant REPO as SQLite
 
-    RT->>AG: send BUY / SELL intent
-    AG->>API: confirm-buy / confirm-sell
-    API->>PS: confirm_position / confirm_exit
+    alt agent 模式
+        RT->>AG: send BUY / SELL intent
+        AG->>API: POST /api/trading/orders
+    else direct 模式
+        RT->>TS: place_order(...)
+    end
+    API->>TS: broker order push / deal push
+    TS->>PS: auto-settle execution
     PS->>REPO: update strategy_positions
     PS->>REPO: update account_positions
     PS->>REPO: update pending_orders
@@ -321,13 +353,14 @@ sequenceDiagram
         RT->>SG: restore pending from repository
         RT->>SG: evaluate_quote(quote, position_qty)
         SG-->>RT: action?/qty
-        alt 产生 BUY / SELL
+        alt agent 模式且产生 BUY / SELL
             RT->>SS: send_signal(...)
             SS->>AG: openclaw agent
+        else direct 模式且产生 BUY / SELL
+            RT->>API: TradingService.place_order(...)
         end
     end
 
-    AG->>API: confirm-buy / confirm-sell
     API->>PS: apply execution to repository
     PG->>OD: monitor account quotes
     PG->>SS: fallback stop-loss / take-profit SELL
@@ -346,13 +379,16 @@ flowchart TD
     G --> H["建立 MA 样本"]
     H --> I["进入报价循环"]
     I --> J["读取 strategy_positions / pending_orders"]
-    J --> K["计算金叉 / 死叉"]
+    J --> K["Signal 计算 BUY / SELL / HOLD"]
     K --> L{"是否产生意图?"}
     L -- 否 --> I
-    L -- 是 --> M["发送 BUY / SELL 给 agent"]
-    M --> N["agent 成交后回调 API"]
-    N --> O["PositionService 更新三层持仓模型"]
-    O --> I
+    L -- 是 --> M{"execution_mode"}
+    M -- "agent" --> N["发送 BUY / SELL 给 agent"]
+    M -- "direct" --> O["TradingService.place_order()"]
+    N --> P["OpenD 交易回报 / 订单同步"]
+    O --> P
+    P --> Q["PositionService 更新三层持仓模型"]
+    Q --> I
 ```
 
 ## 10. 当前优点
