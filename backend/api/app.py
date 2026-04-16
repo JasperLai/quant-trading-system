@@ -381,15 +381,28 @@ class StrategyRuntime:
         if not strategy_supports_backtest(request.strategy_name):
             raise HTTPException(status_code=409, detail='Strategy does not support backtest')
 
+        param_field_names = {
+            field['name']
+            for field in STRATEGY_METADATA[request.strategy_name].get('param_fields', [])
+        }
+        control_param_names = {'backtest_mode'}
+        override_candidates = dict(request.strategy_params)
+        explicit_overrides = {
+            'codes': ('codes', request.codes),
+            'short_ma': ('short_ma', request.short_ma),
+            'long_ma': ('long_ma', request.long_ma),
+            'order_qty': ('order_qty', request.order_qty),
+            'max_position_per_stock': ('max_position_per_stock', request.max_position_per_stock),
+        }
+        for key, (field_name, value) in explicit_overrides.items():
+            if field_name in request.model_fields_set and value is not None:
+                override_candidates[key] = value
         strategy_params = self._resolve_strategy_params(
             request.strategy_name,
             {
-                **request.strategy_params,
-                'codes': request.codes,
-                'short_ma': request.short_ma,
-                'long_ma': request.long_ma,
-                'order_qty': request.order_qty,
-                'max_position_per_stock': request.max_position_per_stock,
+                key: value
+                for key, value in override_candidates.items()
+                if key in param_field_names or key in control_param_names
             },
         )
 
@@ -399,13 +412,14 @@ class StrategyRuntime:
         args = Args()
         args.strategy = request.strategy_name
         args.strategy_params_json = json.dumps(strategy_params, ensure_ascii=False)
+        args.backtest_mode = strategy_params.get('backtest_mode')
         args.codes = strategy_params.get('codes', request.codes)
         args.start = request.start
         args.end = request.end
-        args.short_ma = strategy_params.get('short_ma', request.short_ma)
-        args.long_ma = strategy_params.get('long_ma', request.long_ma)
-        args.order_qty = strategy_params.get('order_qty', request.order_qty)
-        args.max_position_per_stock = strategy_params.get('max_position_per_stock', request.max_position_per_stock)
+        args.short_ma = strategy_params.get('short_ma')
+        args.long_ma = strategy_params.get('long_ma')
+        args.order_qty = strategy_params.get('order_qty')
+        args.max_position_per_stock = strategy_params.get('max_position_per_stock')
         args.rsi_period = strategy_params.get('rsi_period')
         args.oversold = strategy_params.get('oversold')
         args.overbought = strategy_params.get('overbought')
@@ -416,6 +430,10 @@ class StrategyRuntime:
         args.macd_signal = strategy_params.get('macd_signal')
         args.donchian_entry = strategy_params.get('donchian_entry')
         args.donchian_exit = strategy_params.get('donchian_exit')
+        args.breakout_pct = strategy_params.get('breakout_pct')
+        args.pullback_pct = strategy_params.get('pullback_pct')
+        args.entry_start_time = strategy_params.get('entry_start_time')
+        args.flat_time = strategy_params.get('flat_time')
         args.initial_cash = request.initial_cash
         args.commission_rate = request.commission_rate
         args.slippage = request.slippage
