@@ -396,7 +396,7 @@ class RealtimeStrategyRunner:
             pos_info = self.monitor.get_position_info(code)
         position_qty = pos_info['qty'] if pos_info else 0
 
-        result = self.signal.evaluate_quote(quote_data, position_qty=position_qty)
+        result = self.signal.evaluate_quote(quote_data, position_qty=position_qty, position_info=pos_info)
         if result is not None:
             logger.info(self.format_quote_log(result))
             if result['action'] == 'BUY':

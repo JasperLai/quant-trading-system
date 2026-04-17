@@ -436,8 +436,12 @@ class StrategyRuntime:
         args.donchian_exit = strategy_params.get('donchian_exit')
         args.breakout_pct = strategy_params.get('breakout_pct')
         args.pullback_pct = strategy_params.get('pullback_pct')
+        args.stop_loss_pct = strategy_params.get('stop_loss_pct')
         args.entry_start_time = strategy_params.get('entry_start_time')
         args.flat_time = strategy_params.get('flat_time')
+        args.min_hold_minutes = strategy_params.get('min_hold_minutes')
+        args.max_trades_per_day = strategy_params.get('max_trades_per_day')
+        args.reentry_cooldown_minutes = strategy_params.get('reentry_cooldown_minutes')
         args.initial_cash = request.initial_cash
         args.commission_rate = request.commission_rate
         args.slippage = request.slippage

@@ -30,15 +30,19 @@ class TickBacktestEngineTest(unittest.TestCase):
             order_qty=100,
             breakout_pct=0.003,
             pullback_pct=0.002,
+            stop_loss_pct=0.01,
             entry_start_time='09:45:00',
             flat_time='15:45:00',
+            min_hold_minutes=0,
+            max_trades_per_day=3,
+            reentry_cooldown_minutes=0,
         )
         ticks_by_code = {
             'HK.03690': [
                 make_tick('HK.03690', '2026-04-14 09:44:59', 100.00),
                 make_tick('HK.03690', '2026-04-14 09:45:01', 100.35),
-                make_tick('HK.03690', '2026-04-14 09:45:10', 100.60),
-                make_tick('HK.03690', '2026-04-14 09:45:20', 100.38),
+                make_tick('HK.03690', '2026-04-14 09:45:10', 100.70),
+                make_tick('HK.03690', '2026-04-14 09:45:20', 100.45),
             ]
         }
         result = TickBacktestEngine(
@@ -50,4 +54,3 @@ class TickBacktestEngineTest(unittest.TestCase):
         self.assertEqual(['BUY', 'SELL'], [trade['side'] for trade in result['trades']])
         self.assertEqual(4, len(result['equity_curve']))
         self.assertEqual('intraday_breakout_test', result['summary']['strategy'])
-

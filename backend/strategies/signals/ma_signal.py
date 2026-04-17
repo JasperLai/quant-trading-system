@@ -161,7 +161,7 @@ class BaseMaSignal:
     def replace_pending_orders(self, pending_orders):
         raise NotImplementedError
 
-    def evaluate_quote(self, quote_data, position_qty=0):
+    def evaluate_quote(self, quote_data, position_qty=0, position_info=None):
         """
         在最新报价到达时评估是否产生 BUY / SELL 意图。
         """

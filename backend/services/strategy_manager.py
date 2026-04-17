@@ -276,8 +276,12 @@ STRATEGY_METADATA = {
             'order_qty': 100,
             'breakout_pct': 0.004,
             'pullback_pct': 0.003,
+            'stop_loss_pct': 0.004,
             'entry_start_time': '09:45:00',
             'flat_time': '15:45:00',
+            'min_hold_minutes': 3,
+            'max_trades_per_day': 3,
+            'reentry_cooldown_minutes': 5,
         },
         'param_fields': [
             {
@@ -311,6 +315,14 @@ STRATEGY_METADATA = {
                 'step': 0.0005,
             },
             {
+                'name': 'stop_loss_pct',
+                'label': '止损阈值',
+                'type': 'number',
+                'required': True,
+                'min': 0.0001,
+                'step': 0.0005,
+            },
+            {
                 'name': 'entry_start_time',
                 'label': '入场开始时间',
                 'type': 'text',
@@ -323,6 +335,27 @@ STRATEGY_METADATA = {
                 'type': 'text',
                 'required': True,
                 'placeholder': '15:45:00',
+            },
+            {
+                'name': 'min_hold_minutes',
+                'label': '最短持有分钟',
+                'type': 'number',
+                'required': True,
+                'min': 0,
+            },
+            {
+                'name': 'max_trades_per_day',
+                'label': '单日最多交易次数',
+                'type': 'number',
+                'required': True,
+                'min': 1,
+            },
+            {
+                'name': 'reentry_cooldown_minutes',
+                'label': '再次入场冷却分钟',
+                'type': 'number',
+                'required': True,
+                'min': 0,
             },
         ],
     },
@@ -392,8 +425,12 @@ def parse_args():
     parser.add_argument('--max-position-per-stock', type=int, default=None, help='加仓策略的单标的最大仓位')
     parser.add_argument('--breakout-pct', type=float, default=None, help='日内突破阈值')
     parser.add_argument('--pullback-pct', type=float, default=None, help='日内回撤卖出阈值')
+    parser.add_argument('--stop-loss-pct', type=float, default=None, help='日内止损阈值')
     parser.add_argument('--entry-start-time', default=None, help='日内策略开始入场时间')
     parser.add_argument('--flat-time', default=None, help='日内策略平仓时间')
+    parser.add_argument('--min-hold-minutes', type=int, default=None, help='日内策略最短持有分钟')
+    parser.add_argument('--max-trades-per-day', type=int, default=None, help='日内策略单日最多交易次数')
+    parser.add_argument('--reentry-cooldown-minutes', type=int, default=None, help='日内策略再次入场冷却分钟')
     parser.add_argument('--rsi-period', type=int, default=None, help='RSI 周期')
     parser.add_argument('--oversold', type=float, default=None, help='RSI 超卖阈值')
     parser.add_argument('--overbought', type=float, default=None, help='RSI 超买阈值')
@@ -496,8 +533,12 @@ def build_strategy_kwargs(args):
             'max_position_per_stock': args.max_position_per_stock,
             'breakout_pct': args.breakout_pct,
             'pullback_pct': args.pullback_pct,
+            'stop_loss_pct': getattr(args, 'stop_loss_pct', None),
             'entry_start_time': args.entry_start_time,
             'flat_time': args.flat_time,
+            'min_hold_minutes': getattr(args, 'min_hold_minutes', None),
+            'max_trades_per_day': getattr(args, 'max_trades_per_day', None),
+            'reentry_cooldown_minutes': getattr(args, 'reentry_cooldown_minutes', None),
             'rsi_period': args.rsi_period,
             'oversold': args.oversold,
             'overbought': args.overbought,

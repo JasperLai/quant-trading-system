@@ -47,8 +47,12 @@ def parse_args():
     parser.add_argument('--donchian-exit', type=int, default=None)
     parser.add_argument('--breakout-pct', type=float, default=None)
     parser.add_argument('--pullback-pct', type=float, default=None)
+    parser.add_argument('--stop-loss-pct', type=float, default=None)
     parser.add_argument('--entry-start-time', default=None)
     parser.add_argument('--flat-time', default=None)
+    parser.add_argument('--min-hold-minutes', type=int, default=None)
+    parser.add_argument('--max-trades-per-day', type=int, default=None)
+    parser.add_argument('--reentry-cooldown-minutes', type=int, default=None)
     parser.add_argument('--strategy-params-json', default=None, help='通用策略参数 JSON')
     parser.add_argument('--initial-cash', type=float, default=100000.0)
     parser.add_argument('--commission-rate', type=float, default=0.001)
@@ -80,8 +84,12 @@ def build_strategy_kwargs(args):
             'donchian_exit': args.donchian_exit,
             'breakout_pct': args.breakout_pct,
             'pullback_pct': args.pullback_pct,
+            'stop_loss_pct': args.stop_loss_pct,
             'entry_start_time': args.entry_start_time,
             'flat_time': args.flat_time,
+            'min_hold_minutes': args.min_hold_minutes,
+            'max_trades_per_day': args.max_trades_per_day,
+            'reentry_cooldown_minutes': args.reentry_cooldown_minutes,
         },
     )
 

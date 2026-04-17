@@ -38,20 +38,24 @@ class MinuteBacktestTest(unittest.TestCase):
             order_qty=100,
             breakout_pct=0.004,
             pullback_pct=0.002,
+            stop_loss_pct=0.01,
             entry_start_time='09:45:00',
             flat_time='15:45:00',
+            min_hold_minutes=0,
+            max_trades_per_day=3,
+            reentry_cooldown_minutes=0,
         )
         bars_by_code = {
             'HK.03690': [
                 make_minute_bar('HK.03690', '2026-04-14 09:31:00', 100.0, 100.0, 100.0, 100.0),
                 make_minute_bar('HK.03690', '2026-04-14 09:45:00', 100.0, 100.2, 100.0, 100.1),
-                make_minute_bar('HK.03690', '2026-04-14 09:46:00', 100.1, 100.6, 100.1, 100.5),
-                make_minute_bar('HK.03690', '2026-04-14 09:47:00', 100.5, 100.5, 100.1, 100.2),
+                make_minute_bar('HK.03690', '2026-04-14 09:46:00', 100.1, 100.8, 100.1, 100.6),
+                make_minute_bar('HK.03690', '2026-04-14 09:47:00', 100.6, 101.3, 100.5, 101.1),
+                make_minute_bar('HK.03690', '2026-04-14 09:48:00', 101.1, 101.1, 100.6, 100.8),
             ]
         }
         result = MinuteBacktestEngine(signal=signal, initial_cash=100000, commission_rate=0, slippage=0).run(bars_by_code)
         sides = [trade['side'] for trade in result['trades']]
         self.assertEqual(['BUY', 'SELL'], sides)
-        self.assertEqual(4, len(result['equity_curve']))
+        self.assertEqual(5, len(result['equity_curve']))
         self.assertEqual('intraday_breakout_test', result['summary']['strategy'])
-

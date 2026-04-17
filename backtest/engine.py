@@ -163,6 +163,7 @@ class MinuteBacktestEngine:
         return {
             'code': code,
             'last_price': close_price,
+            'high_price': event.get('high', close_price),
             'time_key': time_key,
             'open_price': session_state[code]['open'],
             'prev_close_price': previous_close_by_code.get(code),
@@ -190,6 +191,7 @@ class MinuteBacktestEngine:
             decision = self.signal.evaluate_quote(
                 self._build_quote_payload(event, session_state, previous_close_by_code),
                 position_qty=self.portfolio.get_position_qty(code),
+                position_info=self.portfolio.get_position_info(code),
             )
 
             if decision and decision['action'] == 'BUY':
@@ -337,6 +339,7 @@ class TickBacktestEngine:
             decision = self.signal.evaluate_quote(
                 self._build_quote_payload(event, session_state, previous_close_by_code),
                 position_qty=self.portfolio.get_position_qty(code),
+                position_info=self.portfolio.get_position_info(code),
             )
 
             if decision and decision['action'] == 'BUY':

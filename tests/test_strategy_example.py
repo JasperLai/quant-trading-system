@@ -147,6 +147,36 @@ class FakeMonitor:
         return None
 
 
+class FakeQuoteGateway:
+    def __init__(self, host='127.0.0.1', port=11111):
+        self.host = host
+        self.port = port
+        self.quote_ctx = FakeOpenQuoteContext(host=host, port=port)
+
+    def get_global_state(self):
+        return self.quote_ctx.get_global_state()
+
+    def set_handler(self, handler):
+        return self.quote_ctx.set_handler(handler)
+
+    def subscribe_daily_bars(self, codes):
+        return self.quote_ctx.subscribe(codes, ['K_DAY'], subscribe_push=False)
+
+    def subscribe_quotes(self, codes):
+        return self.quote_ctx.subscribe(codes, ['QUOTE'])
+
+    def get_daily_bars(self, code, count):
+        return self.quote_ctx.get_cur_kline(code, count, 'K_DAY')
+
+    def stop(self):
+        self.quote_ctx.stop()
+        self.quote_ctx.close()
+
+    @property
+    def context(self):
+        return self.quote_ctx
+
+
 def load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -205,6 +235,9 @@ class StrategyTest(unittest.TestCase):
         cls.position_service_module = importlib.import_module('backend.services.position_service')
         cls.api_module = importlib.import_module('backend.api.app')
         cls.backtest_engine_module = importlib.import_module('backtest.engine')
+        cls.runner_module.send_signal = send_signal
+        cls.runner_module.PositionMonitor = FakeMonitor
+        cls.runner_module.FutuQuoteGateway = FakeQuoteGateway
 
     def setUp(self):
         self.fake_signal_sender.calls.clear()
@@ -559,8 +592,12 @@ class StrategyTest(unittest.TestCase):
             order_qty=100,
             breakout_pct=0.01,
             pullback_pct=0.005,
+            stop_loss_pct=0.01,
             entry_start_time='09:30:00',
             flat_time='15:45:00',
+            min_hold_minutes=1,
+            max_trades_per_day=3,
+            reentry_cooldown_minutes=1,
         )
 
         buy = signal.evaluate_quote(
@@ -576,33 +613,66 @@ class StrategyTest(unittest.TestCase):
         )
         self.assertEqual('BUY', buy['action'])
         self.assertEqual(100, buy['qty'])
+        self.assertEqual(0, buy['trades_today'])
 
         hold = signal.evaluate_quote(
             {
                 'code': 'HK.03690',
-                'last_price': 102.0,
+                'last_price': 102.5,
                 'open_price': 100.0,
                 'prev_close_price': 99.8,
                 'data_date': '2026-04-13',
                 'data_time': '10:00:00',
             },
             position_qty=100,
+            position_info={'entry': 101.0, 'entry_time': '2026-04-13T10:00:00'},
         )
         self.assertIsNone(hold['action'])
+        self.assertEqual(1, hold['trades_today'])
+        signal.clear_pending_buy('HK.03690')
 
         sell = signal.evaluate_quote(
             {
                 'code': 'HK.03690',
-                'last_price': 101.3,
+                'last_price': 101.8,
                 'open_price': 100.0,
                 'prev_close_price': 99.8,
                 'data_date': '2026-04-13',
                 'data_time': '10:05:00',
             },
             position_qty=100,
+            position_info={'entry': 101.0, 'entry_time': '2026-04-13T10:00:00'},
         )
         self.assertEqual('SELL', sell['action'])
         self.assertEqual(100, sell['qty'])
+        signal.clear_pending_sell('HK.03690')
+
+        post_exit = signal.evaluate_quote(
+            {
+                'code': 'HK.03690',
+                'last_price': 101.2,
+                'open_price': 100.0,
+                'prev_close_price': 99.8,
+                'data_date': '2026-04-13',
+                'data_time': '10:06:00',
+            },
+            position_qty=0,
+        )
+        self.assertIsNone(post_exit['action'])
+
+        second_buy = signal.evaluate_quote(
+            {
+                'code': 'HK.03690',
+                'last_price': 101.5,
+                'open_price': 100.0,
+                'prev_close_price': 99.8,
+                'data_date': '2026-04-13',
+                'data_time': '10:07:00',
+            },
+            position_qty=0,
+        )
+        self.assertEqual('BUY', second_buy['action'])
+        self.assertEqual(1, second_buy['trades_today'])
 
     def test_backtest_engine_can_open_and_close_position(self):
         signal = self.signal_module.SinglePositionMaSignal(codes=['SZ.000001'], short_ma=2, long_ma=3, order_qty=100)

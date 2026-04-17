@@ -217,7 +217,7 @@ class RsiReversionSignal(BaseDailyIndicatorSignal):
             lines.append(f"  {code}: RSI={rsi:.2f}" if rsi is not None else f"  {code}: RSI=样本不足")
         return lines
 
-    def evaluate_quote(self, quote_data, position_qty=0):
+    def evaluate_quote(self, quote_data, position_qty=0, position_info=None):
         code = quote_data['code']
         price = quote_data['last_price']
         live_prices = self.calculate_live_prices(code, price)
@@ -334,7 +334,7 @@ class BollingerReversionSignal(BaseDailyIndicatorSignal):
                 lines.append(f"  {code}: 中轨={middle:.2f}, 下轨={lower:.2f}, 上轨={upper:.2f}")
         return lines
 
-    def evaluate_quote(self, quote_data, position_qty=0):
+    def evaluate_quote(self, quote_data, position_qty=0, position_info=None):
         code = quote_data['code']
         price = quote_data['last_price']
         live_prices = self.calculate_live_prices(code, price)
@@ -455,7 +455,7 @@ class MacdTrendSignal(BaseDailyIndicatorSignal):
                 lines.append(f"  {code}: MACD={macd_line:.4f}, Signal={signal_line:.4f}")
         return lines
 
-    def evaluate_quote(self, quote_data, position_qty=0):
+    def evaluate_quote(self, quote_data, position_qty=0, position_info=None):
         code = quote_data['code']
         price = quote_data['last_price']
         live_prices = self.calculate_live_prices(code, price)
@@ -565,7 +565,7 @@ class DonchianBreakoutSignal(BaseDailyIndicatorSignal):
                 lines.append(f"  {code}: 突破价={entry_high:.2f}, 退出价={exit_low:.2f}")
         return lines
 
-    def evaluate_quote(self, quote_data, position_qty=0):
+    def evaluate_quote(self, quote_data, position_qty=0, position_info=None):
         code = quote_data['code']
         price = quote_data['last_price']
         live_prices = self.calculate_live_prices(code, price)
