@@ -112,7 +112,10 @@ quant-trading-system/
 │   └── run_backtest.py                # 回测 CLI
 ├── docs/
 │   ├── AGENT_API.md                   # agent 调用接口文档
+│   ├── BACKTEST_ARCHITECTURE.md       # 回测模块设计文档
+│   ├── BACKTEST_EVOLUTION.md          # 回测专业化演进文档
 │   └── STRATEGY_ARCHITECTURE.md       # 架构设计文档
+│   └── ZIPLINE_INTEGRATION.md         # Zipline 对接设计文档
 ├── frontend/                          # Ant Design 前端
 └── tests/
     └── test_strategy_example.py       # 核心单测
@@ -143,6 +146,10 @@ quant-trading-system/
 1. `data_provider.py` 通过 OpenD 历史 K 线接口拉数据。
 2. 回测引擎复用 `ma_signal.py` 的同一套策略信号逻辑。
 3. 引擎根据策略信号和风控逻辑生成交易记录与统计结果。
+4. 回测 backend 当前支持：
+   - `native`：项目自带 `daily / minute / tick` 引擎
+   - `zipline`：`daily / minute` 的可选专业 backend
+5. `zipline` backend 已完成接口接入，但本机还需要额外补齐 Zipline 依赖环境。
 
 ## SQLite 持久化模型
 

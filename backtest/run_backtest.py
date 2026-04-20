@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from backtest.data_provider import FutuHistoryDataProvider
 from backtest.engine import BacktestEngine, MinuteBacktestEngine, TickBacktestEngine
+from backtest.zipline_runner import ZiplineBacktestRunner
 from backend.services.strategy_manager import (
     STRATEGY_METADATA,
     StrategyManager,
@@ -28,6 +29,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='历史K线回测')
     parser.add_argument('--strategy', default='single_position_ma', choices=sorted(STRATEGY_METADATA.keys()))
     parser.add_argument('--backtest-mode', choices=['daily', 'minute', 'tick'], default=None)
+    parser.add_argument('--backtest-backend', choices=['native', 'zipline'], default='native')
     parser.add_argument('--codes', nargs='+', default=None)
     parser.add_argument('--start', required=True, help='开始日期，例如 2025-01-01')
     parser.add_argument('--end', required=True, help='结束日期，例如 2025-12-31')
@@ -105,6 +107,34 @@ def main():
 
     provider = FutuHistoryDataProvider()
     engine_name = args.backtest_mode or get_backtest_engine_name(args.strategy)
+    if args.backtest_backend == 'zipline':
+        if engine_name == 'tick':
+            raise ValueError('zipline backend 当前不支持 tick 回测，请改用 native backend')
+        bars_by_code = provider.fetch_many(
+            signal.codes,
+            start=args.start,
+            end=args.end,
+            ktype='K_1M' if engine_name == 'minute' else get_backtest_ktype(args.strategy),
+            use_cache=not args.no_cache,
+        )
+        result = ZiplineBacktestRunner(
+            signal=signal,
+            strategy_name=args.strategy,
+            initial_cash=args.initial_cash,
+            commission_rate=args.commission_rate,
+            slippage=args.slippage,
+        ).run(
+            bars_by_code=bars_by_code,
+            start=args.start,
+            end=args.end,
+            engine_name=engine_name,
+        )
+        print(json.dumps(result['summary'], ensure_ascii=False, indent=2))
+        if args.report_file:
+            report_path = Path(args.report_file)
+            report_path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+            print(f'详细报告已写入: {report_path}')
+        return
     if engine_name == 'tick':
         bars_by_code = provider.fetch_many_tickers(
             signal.codes,

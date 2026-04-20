@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from backtest.data_provider import FutuHistoryDataProvider
 from backtest.engine import BacktestEngine, MinuteBacktestEngine, TickBacktestEngine
+from backtest.zipline_runner import ZiplineBacktestRunner
 from backend.core.config import TAKE_PROFIT_PCT
 from backend.repositories.runtime_repository import RuntimeRepository
 from backend.services.position_service import PositionService
@@ -31,6 +32,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='回测信号 -> 业务流程回放验证')
     parser.add_argument('--strategy', default='pyramiding_ma', choices=sorted(STRATEGY_METADATA.keys()))
     parser.add_argument('--backtest-mode', choices=['daily', 'minute', 'tick'], default=None)
+    parser.add_argument('--backtest-backend', choices=['native', 'zipline'], default='native')
     parser.add_argument('--codes', nargs='+', default=None)
     parser.add_argument('--start', required=True, help='开始日期，例如 2025-10-01')
     parser.add_argument('--end', required=True, help='结束日期，例如 2026-04-08')
@@ -107,6 +109,29 @@ def run_backtest(args):
     signal = manager.load_signal(args.strategy, **strategy_kwargs)
     provider = FutuHistoryDataProvider()
     engine_name = args.backtest_mode or get_backtest_engine_name(args.strategy)
+    if args.backtest_backend == 'zipline':
+        if engine_name == 'tick':
+            raise ValueError('zipline backend 当前不支持 tick 回测，请改用 native backend')
+        bars_by_code = provider.fetch_many(
+            signal.codes,
+            start=args.start,
+            end=args.end,
+            ktype='K_1M' if engine_name == 'minute' else get_backtest_ktype(args.strategy),
+            use_cache=not args.no_cache,
+        )
+        result = ZiplineBacktestRunner(
+            signal=signal,
+            strategy_name=args.strategy,
+            initial_cash=args.initial_cash,
+            commission_rate=args.commission_rate,
+            slippage=args.slippage,
+        ).run(
+            bars_by_code=bars_by_code,
+            start=args.start,
+            end=args.end,
+            engine_name=engine_name,
+        )
+        return result, bars_by_code, strategy_kwargs
     if engine_name == 'tick':
         bars_by_code = provider.fetch_many_tickers(
             signal.codes,
@@ -330,6 +355,7 @@ def run_replay_validation(args):
         'input': {
             'strategy': args.strategy,
             'strategyParams': strategy_kwargs,
+            'backtestBackend': args.backtest_backend,
             'start': args.start,
             'end': args.end,
         },
