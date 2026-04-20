@@ -120,7 +120,6 @@ class BacktestValidationRequest(BaseModel):
 
     strategy_name: str = Field('pyramiding_ma', alias='strategyName')
     strategy_params: Dict[str, Any] = Field(default_factory=dict, alias='strategyParams')
-    backtest_backend: Literal['native', 'zipline'] = Field('native', alias='backtestBackend')
     codes: List[str] = Field(default_factory=lambda: ['HK.03690'])
     start: str
     end: str
@@ -390,7 +389,7 @@ class StrategyRuntime:
             field['name']
             for field in STRATEGY_METADATA[request.strategy_name].get('param_fields', [])
         }
-        control_param_names = {'backtest_mode', 'backtest_backend'}
+        control_param_names = {'backtest_mode'}
         override_candidates = dict(request.strategy_params)
         explicit_overrides = {
             'codes': ('codes', request.codes),
@@ -418,7 +417,6 @@ class StrategyRuntime:
         args.strategy = request.strategy_name
         args.strategy_params_json = json.dumps(strategy_params, ensure_ascii=False)
         args.backtest_mode = strategy_params.get('backtest_mode')
-        args.backtest_backend = strategy_params.get('backtest_backend', request.backtest_backend)
         args.codes = strategy_params.get('codes', request.codes)
         args.start = request.start
         args.end = request.end

@@ -24,16 +24,6 @@ import { api } from './api';
 const COMMON_BACKTEST_FIELDS = [
   { name: 'start', label: '开始日期', type: 'text', required: true, placeholder: '2025-10-01' },
   { name: 'end', label: '结束日期', type: 'text', required: true, placeholder: '2026-04-08' },
-  {
-    name: 'backtestBackend',
-    label: '回测后端',
-    type: 'select',
-    required: true,
-    options: [
-      { label: '原生引擎', value: 'native' },
-      { label: 'Zipline', value: 'zipline' },
-    ],
-  },
   { name: 'initialCash', label: '初始资金', type: 'number', required: true, min: 1 },
   { name: 'commissionRate', label: '手续费率', type: 'number', required: true, min: 0, step: 0.0001 },
   { name: 'slippage', label: '滑点', type: 'number', required: true, min: 0, step: 0.01 },
@@ -191,7 +181,6 @@ function normalizeStrategyDefaults(strategy) {
     strategyName: strategy?.name,
     start: '2025-10-01',
     end: '2026-04-08',
-    backtestBackend: 'native',
     initialCash: 100000,
     commissionRate: 0.001,
     slippage: 0,
@@ -222,14 +211,6 @@ function renderStrategyField(field) {
     return (
       <Form.Item key={field.name} name={field.name} label={field.label} rules={rules}>
         <InputNumber min={field.min} step={field.step || 1} style={{ width: '100%' }} />
-      </Form.Item>
-    );
-  }
-
-  if (field.type === 'select') {
-    return (
-      <Form.Item key={field.name} name={field.name} label={field.label} rules={rules}>
-        <Select options={field.options || []} />
       </Form.Item>
     );
   }
@@ -328,7 +309,6 @@ export default function BacktestPage() {
       const payload = {
         strategyName: values.strategyName,
         strategyParams,
-        backtestBackend: values.backtestBackend,
         codes: (strategyParams.codes || '')
           .split(',')
           .map((item) => item.trim())
