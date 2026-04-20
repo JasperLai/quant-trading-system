@@ -31,6 +31,12 @@ class BaseDailyIndicatorSignal:
     def history_bar_count(self):
         return self.min_history_bars() + 5
 
+    def to_config(self):
+        return {
+            'codes': list(self.codes),
+            'order_qty': self.order_qty,
+        }
+
     def min_history_bars(self):
         raise NotImplementedError
 
@@ -182,6 +188,17 @@ class RsiReversionSignal(BaseDailyIndicatorSignal):
     def min_history_bars(self):
         return self.rsi_period + 2
 
+    def to_config(self):
+        config = super().to_config()
+        config.update(
+            {
+                'rsi_period': self.rsi_period,
+                'oversold': self.oversold,
+                'overbought': self.overbought,
+            }
+        )
+        return config
+
     def startup_lines(self):
         return super().startup_lines() + [
             f"RSI周期: {self.rsi_period}",
@@ -278,6 +295,16 @@ class BollingerReversionSignal(BaseDailyIndicatorSignal):
 
     def min_history_bars(self):
         return self.bollinger_period + 2
+
+    def to_config(self):
+        config = super().to_config()
+        config.update(
+            {
+                'bollinger_period': self.bollinger_period,
+                'stddev_multiplier': self.stddev_multiplier,
+            }
+        )
+        return config
 
     def _bands(self, prices):
         if len(prices) < self.bollinger_period:
@@ -405,6 +432,17 @@ class MacdTrendSignal(BaseDailyIndicatorSignal):
     def min_history_bars(self):
         return self.macd_slow + self.macd_signal_period
 
+    def to_config(self):
+        config = super().to_config()
+        config.update(
+            {
+                'macd_fast': self.macd_fast,
+                'macd_slow': self.macd_slow,
+                'macd_signal': self.macd_signal_period,
+            }
+        )
+        return config
+
     def _macd(self, prices):
         if len(prices) < self.min_history_bars():
             return None, None, None
@@ -516,6 +554,16 @@ class DonchianBreakoutSignal(BaseDailyIndicatorSignal):
 
     def min_history_bars(self):
         return max(self.donchian_entry, self.donchian_exit) + 1
+
+    def to_config(self):
+        config = super().to_config()
+        config.update(
+            {
+                'donchian_entry': self.donchian_entry,
+                'donchian_exit': self.donchian_exit,
+            }
+        )
+        return config
 
     def startup_lines(self):
         return super().startup_lines() + [

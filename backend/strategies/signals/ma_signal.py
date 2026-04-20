@@ -106,6 +106,14 @@ class BaseMaSignal:
     def history_bar_count(self):
         return self.long_ma_period + 5
 
+    def to_config(self):
+        return {
+            'codes': list(self.codes),
+            'short_ma': self.short_ma_period,
+            'long_ma': self.long_ma_period,
+            'order_qty': self.order_qty,
+        }
+
     def startup_lines(self):
         return [
             f"启动策略: {self.strategy_name}",

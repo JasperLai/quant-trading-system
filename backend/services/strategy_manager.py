@@ -4,7 +4,6 @@
 import argparse
 import json
 
-from backend.strategies.runtime.realtime_runner import RealtimeStrategyRunner
 from backend.strategies.signals.indicator_signals import (
     BollingerReversionSignal,
     DonchianBreakoutSignal,
@@ -390,6 +389,8 @@ class StrategyManager:
         if name not in self.registry:
             raise ValueError(f'未知策略: {name}. 可用策略: {", ".join(self.list_strategies())}')
         validate_runtime_kwargs(kwargs)
+        from backend.strategies.runtime.realtime_runner import RealtimeStrategyRunner
+
         strategy = RealtimeStrategyRunner(
             signal_class=self.registry[name]['signal_class'],
             strategy_name=name,

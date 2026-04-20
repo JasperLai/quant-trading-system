@@ -195,6 +195,20 @@ class IntradayBreakoutSignal:
             f"单次下单数量: {self.order_qty}",
         ]
 
+    def to_config(self):
+        return {
+            'codes': list(self.codes),
+            'order_qty': self.order_qty,
+            'breakout_pct': self.breakout_pct,
+            'pullback_pct': self.pullback_pct,
+            'stop_loss_pct': self.stop_loss_pct,
+            'entry_start_time': self.entry_start_time,
+            'flat_time': self.flat_time,
+            'min_hold_minutes': self.min_hold_minutes,
+            'max_trades_per_day': self.max_trades_per_day,
+            'reentry_cooldown_minutes': self.reentry_cooldown_minutes,
+        }
+
     def format_quote_log(self, result):
         return "[日内报价] %s 实时价: %.2f | 参考价: %.2f | 日内高点: %.2f | 当日已交易: %s | 时间: %s" % (
             result['code'],
